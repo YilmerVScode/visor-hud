@@ -206,8 +206,11 @@ function onOrient(e){
   if (h != null) S.heading = S.heading == null ? h : lerpAngle(S.heading, h, .2);
 }
 function lerpAngle(a, b, t){ let d = ((b - a + 540) % 360) - 180; return (a + d * t + 360) % 360; }
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function onMotion(e){
-  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  const r = e.accelerationIncludingGravity; if (!r || r.x == null) return;
+  // Safari en iOS entrega la gravedad con el signo invertido respecto a Android y al estándar
+  const k = IOS ? -1 : 1, a = { x: r.x * k, y: r.y * k, z: r.z * k };
   const roll = Math.atan2(a.x, a.y) * 180 / Math.PI - screenAngle();      // giro respecto a la pantalla, en vertical u horizontal
   const pitch = Math.atan2(-a.z, Math.hypot(a.x, a.y)) * 180 / Math.PI;    // + = cámara apunta hacia arriba
   S.roll += (((roll - S.roll + 540) % 360) - 180) * .15;
@@ -217,7 +220,7 @@ function onMotion(e){
 }
 async function startBattery(){
   const segs = [...document.querySelectorAll('#pwr u')], el = $('pwr');
-  if (!navigator.getBattery){ $('bat').textContent = 'N/D'; el.title = 'Safari en iOS no permite leer la batería'; return; }
+  if (!navigator.getBattery){ $('bat').textContent = IOS ? 'BLOQUEADA iOS' : 'N/D'; el.querySelector('i').hidden = true; return; }
   try {
     const b = await navigator.getBattery();
     const upd = () => { const pct = Math.round(b.level * 100); $('bat').textContent = pct + '%' + (b.charging ? '⚡' : '');
@@ -225,7 +228,7 @@ async function startBattery(){
       el.classList.toggle('low', pct <= 20 && !b.charging); el.classList.toggle('mid', pct > 20 && pct <= 40 && !b.charging);
       if (pct <= 20 && !b.charging && !S.lowWarned){ S.lowWarned = true; log('Energía baja: ' + pct + '%'); say('Advertencia. Energía al ' + pct + ' por ciento'); } };
     upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd);
-  } catch (e) { $('bat').textContent = 'N/D'; }
+  } catch (e) { $('bat').textContent = 'N/D'; el.querySelector('i').hidden = true; }
 }
 function startGeo(){
   if (!('geolocation' in navigator)) return;
