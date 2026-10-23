@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#02080c">
+<title>Visor HUD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: cámara a pantalla completa, lienzo de HUD encima, paneles de datos anclados a las esquinas */
+:root{
+  --hud:#5fe6ff;        /* cian del visor */
+  --hud-dim:rgba(95,230,255,.35);
+  --warn:#ffb547;       /* ámbar: objetivo fijado / alerta */
+  --crit:#ff4d5e;
+  --glass:rgba(2,14,20,.42);
+  --ink:#e8fbff;
+  --display:"Chakra Petch","Avenir Next Condensed","Arial Narrow",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidden;font-family:var(--mono);-webkit-user-select:none;user-select:none;touch-action:manipulation}
+#cam,#hud{position:fixed;inset:0;width:100%;height:100%}
+#cam{object-fit:cover;background:#000}
+#hud{pointer-events:auto}
+.panel{position:fixed;background:var(--glass);border:1px solid var(--hud-dim);padding:8px 10px;font-size:11px;line-height:1.5;color:var(--hud);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
+  font-variant-numeric:tabular-nums;pointer-events:none;min-width:132px}
+.panel h3{margin:0 0 4px;font:700 10px/1 var(--display);letter-spacing:.18em;color:var(--ink);opacity:.85}
+.row{display:flex;justify-content:space-between;gap:10px}
+.row span:first-child{opacity:.6}
+.row b{font-weight:600;color:var(--ink)}
+#pTL{top:calc(env(safe-area-inset-top,0px) + 10px);left:calc(env(safe-area-inset-left,0px) + 10px)}
+#pTR{top:calc(env(safe-area-inset-top,0px) + 10px);right:calc(env(safe-area-inset-right,0px) + 10px);text-align:right}
+#pL{top:calc(env(safe-area-inset-top,0px) + 126px);left:calc(env(safe-area-inset-left,0px) + 10px)}
+#pR{top:calc(env(safe-area-inset-top,0px) + 126px);right:calc(env(safe-area-inset-right,0px) + 10px)}
+#clock{font:700 22px/1 var(--display);color:var(--ink);letter-spacing:.06em}
+#target{bottom:calc(env(safe-area-inset-bottom,0px) + 150px);right:calc(env(safe-area-inset-right,0px) + 10px);border-color:var(--warn);color:var(--warn);min-width:180px}
+#target h3{color:var(--warn)}
+#log{position:fixed;left:calc(env(safe-area-inset-left,0px) + 10px);bottom:calc(env(safe-area-inset-bottom,0px) + 150px);font-size:10px;color:var(--hud);max-width:40vw;pointer-events:none;opacity:.85}
+.pwr{display:flex;flex-wrap:wrap;justify-content:space-between;column-gap:10px;margin-top:2px}
+.pwr span{opacity:.6}
+.pwr i{display:flex;gap:2px;flex:1 0 100%;margin-top:3px}
+.pwr i u{flex:1;height:7px;background:var(--hud-dim);opacity:.35;text-decoration:none}
+.pwr i u.f{opacity:1;background:var(--hud);box-shadow:0 0 5px var(--hud)}
+.pwr.low i u.f{background:var(--crit);box-shadow:0 0 5px var(--crit)}
+.pwr.mid i u.f{background:var(--warn);box-shadow:0 0 5px var(--warn)}
+.pwr b{font-weight:600;color:var(--ink)}
+/* horizontal: paneles compactos en dos columnas laterales, centro libre para la escena */
+@media (orientation:landscape) and (max-height:540px){
+  .panel{font-size:10px;line-height:1.3;padding:5px 8px;min-width:120px}
+  #clock{font-size:17px}
+  #pL{top:calc(env(safe-area-inset-top,0px) + 98px)}
+  #pR{top:calc(env(safe-area-inset-top,0px) + 86px)}
+  #target{bottom:calc(env(safe-area-inset-bottom,0px) + 96px)}
+  #log{bottom:calc(env(safe-area-inset-bottom,0px) + 96px);max-width:28vw}
+  #log div:nth-child(n+4){display:none}
+  #bar{padding-top:4px;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 6px)}
+  #bar button{padding:9px 2px}
+}
+#log div{animation:fade 6s forwards}
+@keyframes fade{0%,70%{opacity:1}100%{opacity:0}}
+#bar{position:fixed;left:0;right:0;bottom:0;padding:8px max(10px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 10px) max(10px,env(safe-area-inset-left,0px));
+  display:flex;gap:5px;justify-content:center}
+#bar button{font:700 10px/1 var(--display);letter-spacing:.08em;color:var(--hud);background:var(--glass);border:1px solid var(--hud-dim);padding:12px 2px;flex:1 1 0;min-width:0;max-width:110px;
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+#bar button.on{background:rgba(95,230,255,.22);color:var(--ink);border-color:var(--hud)}
+#bar button:focus-visible{outline:2px solid var(--warn)}
+#boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(circle at 50% 45%,#06303a 0,#02080c 70%);z-index:20;padding:24px;text-align:center}
+#boot h1{margin:0;font:700 34px/1 var(--display);letter-spacing:.22em;color:var(--hud);text-shadow:0 0 18px rgba(95,230,255,.6)}
+#boot p{margin:0;max-width:34ch;font-size:12px;line-height:1.6;color:#9fd8e4}
+#go{font:700 15px/1 var(--display);letter-spacing:.3em;color:#02080c;background:var(--hud);border:0;padding:16px 30px;clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px);box-shadow:0 0 30px rgba(95,230,255,.5)}
+#ring{width:120px;height:120px;border-radius:50%;border:2px solid var(--hud-dim);border-top-color:var(--hud);animation:spin 2.4s linear infinite;box-shadow:0 0 40px rgba(95,230,255,.25) inset}
+@keyframes spin{to{transform:rotate(360deg)}}
+#err{color:var(--crit);font-size:12px;max-width:36ch}
+#shot{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px}
+#shot img{max-width:100%;max-height:75vh;border:1px solid var(--hud)}
+#shot p{font-size:12px;color:var(--hud);margin:0;text-align:center}
+#shot button{font:700 12px var(--display);letter-spacing:.2em;background:var(--hud);color:#02080c;border:0;padding:12px 24px}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){#ring{animation:none}#log div{animation:none}}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="hud"></canvas>
+
+<div class="panel" id="pTL">
+  <div id="clock">--:--:--</div>
+  <div id="date">—</div>
+  <div class="row"><span>FPS</span><b id="fps">0</b></div>
+  <div class="pwr" id="pwr"><span>ENERGÍA</span><b id="bat">—</b><i><u></u><u></u><u></u><u></u><u></u><u></u><u></u><u></u><u></u><u></u></i></div>
+</div>
+<div class="panel" id="pTR">
+  <h3>SISTEMA</h3>
+  <div class="row"><span>RED</span><b id="net">—</b></div>
+  <div class="row"><span>IA</span><b id="ai">OFF</b></div>
+  <div class="row"><span>LUZ</span><b id="lux">—</b></div>
+</div>
+<div class="panel" id="pL">
+  <h3>POSICIÓN</h3>
+  <div class="row"><span>LAT</span><b id="lat">—</b></div>
+  <div class="row"><span>LON</span><b id="lon">—</b></div>
+  <div class="row"><span>ALT</span><b id="alt">—</b></div>
+  <div class="row"><span>PREC</span><b id="acc">—</b></div>
+  <div class="row"><span>VEL</span><b id="spd">—</b></div>
+</div>
+<div class="panel" id="pR">
+  <h3>INERCIAL</h3>
+  <div class="row"><span>RUMBO</span><b id="hdg">—</b></div>
+  <div class="row"><span>INCL</span><b id="pitch">—</b></div>
+  <div class="row"><span>GIRO</span><b id="roll">—</b></div>
+  <div class="row"><span>FUERZA</span><b id="gf">—</b></div>
+  <div class="row"><span>AUDIO</span><b id="db">—</b></div>
+</div>
+<div class="panel" id="target" hidden>
+  <h3>OBJETIVO FIJADO</h3>
+  <div class="row"><span>TIPO</span><b id="tName">—</b></div>
+  <div class="row"><span>CONF</span><b id="tConf">—</b></div>
+  <div class="row"><span>DIST≈</span><b id="tDist">—</b></div>
+  <div class="row"><span>RUMBO</span><b id="tBrg">—</b></div>
+</div>
+<div id="log"></div>
+
+<div id="bar">
+  <button id="bScan" type="button">ESCANEO</button>
+  <button id="bVoice" type="button">VOZ</button>
+  <button id="bMic" type="button">AUDIO</button>
+  <button id="bFlip" type="button">CÁMARA</button>
+  <button id="bShot" type="button">CAPTURA</button>
+</div>
+
+<div id="boot">
+  <div id="ring"></div>
+  <h1>VISOR</h1>
+  <p>Interfaz de realidad aumentada. Al iniciar se pedirá permiso para la cámara, el movimiento del dispositivo y la ubicación.</p>
+  <button id="go" type="button">INICIAR</button>
+  <div id="err"></div>
+</div>
+
+<div id="shot" hidden>
+  <img id="shotImg" alt="Captura del visor">
+  <p>Mantén pulsada la imagen y elige «Guardar en Fotos».</p>
+  <button id="shotClose" type="button">CERRAR</button>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const video = $('cam'), cv = $('hud'), ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+const S = {
+  facing: 'environment', stream: null,
+  heading: null, pitch: 0, roll: 0, g: 1, gHist: [],
+  scan: false, model: null, loadingModel: false, dets: [], lastDet: 0, seen: new Map(),
+  voice: false, mic: null, db: null,
+  lock: null, t0: performance.now(), frames: 0, fps: 0, lux: null,
+  vFov: 66, // campo de visión vertical aproximado de la cámara principal del iPhone (66° en vertical, 50° en horizontal)
+  panels: []
+};
+
+// --- etiquetas COCO-SSD en español + altura típica (m) para estimar distancia
+const LBL = {person:['persona',1.7],bicycle:['bicicleta',1.05],car:['coche',1.5],motorcycle:['moto',1.1],airplane:['avión',5],bus:['autobús',3.2],train:['tren',4],truck:['camión',3],boat:['barco',2],
+'traffic light':['semáforo',.9],'fire hydrant':['hidrante',.8],'stop sign':['señal stop',.75],'parking meter':['parquímetro',1.3],bench:['banco',.85],bird:['pájaro',.2],cat:['gato',.3],dog:['perro',.55],
+horse:['caballo',1.6],sheep:['oveja',.9],cow:['vaca',1.4],elephant:['elefante',3],bear:['oso',1.2],zebra:['cebra',1.4],giraffe:['jirafa',5],backpack:['mochila',.5],umbrella:['paraguas',.9],
+handbag:['bolso',.3],tie:['corbata',.5],suitcase:['maleta',.65],frisbee:['frisbee',.03],skis:['esquís',1.7],snowboard:['snowboard',1.5],'sports ball':['balón',.22],kite:['cometa',.8],
+'baseball bat':['bate',.85],'baseball glove':['guante',.3],skateboard:['patineta',.12],surfboard:['tabla surf',2],'tennis racket':['raqueta',.68],bottle:['botella',.25],'wine glass':['copa',.2],
+cup:['taza',.1],fork:['tenedor',.19],knife:['cuchillo',.22],spoon:['cuchara',.17],bowl:['tazón',.08],banana:['plátano',.18],apple:['manzana',.08],sandwich:['sándwich',.06],orange:['naranja',.08],
+broccoli:['brócoli',.15],carrot:['zanahoria',.18],'hot dog':['perrito',.05],pizza:['pizza',.04],donut:['dona',.04],cake:['pastel',.12],chair:['silla',.9],couch:['sofá',.85],'potted plant':['planta',.5],
+bed:['cama',.6],'dining table':['mesa',.75],toilet:['inodoro',.75],tv:['televisor',.6],laptop:['portátil',.23],mouse:['ratón',.04],remote:['mando',.18],keyboard:['teclado',.03],'cell phone':['móvil',.15],
+microwave:['microondas',.3],oven:['horno',.85],toaster:['tostadora',.2],sink:['fregadero',.3],refrigerator:['nevera',1.75],book:['libro',.23],clock:['reloj',.3],vase:['jarrón',.3],scissors:['tijeras',.2],
+'teddy bear':['peluche',.35],'hair drier':['secador',.25],toothbrush:['cepillo',.19]};
+
+const fmt = (v, d = 1) => (v == null || isNaN(v)) ? '—' : v.toFixed(d);
+const pad = n => String(n).padStart(2, '0');
+const CARD = ['N','NE','E','SE','S','SO','O','NO'];
+const card = h => CARD[Math.round(h / 45) % 8];
+function log(msg){ const d = document.createElement('div'); d.textContent = '> ' + msg; $('log').prepend(d); while ($('log').children.length > 5) $('log').lastChild.remove(); }
+function say(t){ if (!S.voice || !('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(t); u.lang = 'es-ES'; u.rate = 1.05; speechSynthesis.speak(u); }
+
+function resize(){ DPR = Math.min(window.devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR,0,0,DPR,0,0); S.vFov = W > H ? 50 : 66; measurePanels(); }
+// ángulo de la pantalla respecto a la posición vertical natural (0, 90, -90, 180)
+function screenAngle(){ if (typeof window.orientation === 'number') return window.orientation; const a = screen.orientation && screen.orientation.angle; return a ? (a > 180 ? a - 360 : a) : 0; }
+// zonas ocupadas por paneles, para que las etiquetas de objetos no se monten encima
+function measurePanels(){ S.panels = ['pTL','pTR','pL','pR','target','log','bar'].map($).filter(el => el && !el.hidden && el.offsetWidth).map(el => { const b = el.getBoundingClientRect(); return [b.left - 4, b.top - 4, b.right + 4, b.bottom + 4]; }); }
+addEventListener('resize', resize); addEventListener('orientationchange', () => setTimeout(resize, 300)); resize();
+
+// --- cámara
+async function startCam(){
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+  S.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: S.facing, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+  video.srcObject = S.stream; await video.play();
+  video.style.transform = S.facing === 'user' ? 'scaleX(-1)' : '';
+}
+
+// --- sensores
+function onOrient(e){
+  let h = null;
+  if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;      // iOS
+  else if (e.absolute && e.alpha != null) h = (360 - e.alpha) % 360;               // Android
+  if (h != null) S.heading = S.heading == null ? h : lerpAngle(S.heading, h, .2);
+}
+function lerpAngle(a, b, t){ let d = ((b - a + 540) % 360) - 180; return (a + d * t + 360) % 360; }
+function onMotion(e){
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  const roll = Math.atan2(a.x, a.y) * 180 / Math.PI - screenAngle();      // giro respecto a la pantalla, en vertical u horizontal
+  const pitch = Math.atan2(-a.z, Math.hypot(a.x, a.y)) * 180 / Math.PI;    // + = cámara apunta hacia arriba
+  S.roll += (((roll - S.roll + 540) % 360) - 180) * .15;
+  S.pitch += (pitch - S.pitch) * .15;
+  S.g = Math.hypot(a.x, a.y, a.z) / 9.81;
+  S.gHist.push(S.g); if (S.gHist.length > 90) S.gHist.shift();
+}
+async function startBattery(){
+  const segs = [...document.querySelectorAll('#pwr u')], el = $('pwr');
+  if (!navigator.getBattery){ $('bat').textContent = 'N/D'; el.title = 'Safari en iOS no permite leer la batería'; return; }
+  try {
+    const b = await navigator.getBattery();
+    const upd = () => { const pct = Math.round(b.level * 100); $('bat').textContent = pct + '%' + (b.charging ? '⚡' : '');
+      segs.forEach((u, i) => u.classList.toggle('f', i < Math.ceil(pct / 10)));
+      el.classList.toggle('low', pct <= 20 && !b.charging); el.classList.toggle('mid', pct > 20 && pct <= 40 && !b.charging);
+      if (pct <= 20 && !b.charging && !S.lowWarned){ S.lowWarned = true; log('Energía baja: ' + pct + '%'); say('Advertencia. Energía al ' + pct + ' por ciento'); } };
+    upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd);
+  } catch (e) { $('bat').textContent = 'N/D'; }
+}
+function startGeo(){
+  if (!('geolocation' in navigator)) return;
+  navigator.geolocation.watchPosition(p => {
+    const c = p.coords;
+    $('lat').textContent = fmt(c.latitude, 5) + '°'; $('lon').textContent = fmt(c.longitude, 5) + '°';
+    $('alt').textContent = c.altitude != null ? fmt(c.altitude, 0) + ' m' : '—';
+    $('acc').textContent = '±' + fmt(c.accuracy, 0) + ' m';
+    $('spd').textContent = c.speed != null && c.speed >= 0 ? fmt(c.speed * 3.6, 1) + ' km/h' : '0 km/h';
+  }, err => log('GPS: ' + err.message), { enableHighAccuracy: true, maximumAge: 1000 });
+}
+
+// --- micrófono
+async function toggleMic(){
+  if (S.mic){ S.mic.stream.getTracks().forEach(t => t.stop()); S.mic.ac.close(); S.mic = null; S.db = null; $('bMic').classList.remove('on'); $('db').textContent = '—'; return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const an = ac.createAnalyser(); an.fftSize = 1024; ac.createMediaStreamSource(stream).connect(an);
+    S.mic = { stream, ac, an, buf: new Float32Array(an.fftSize) }; $('bMic').classList.add('on'); log('Sensor acústico activo');
+  } catch (e) { log('Micrófono denegado'); }
+}
+
+// --- IA de detección de objetos
+function loadScript(src){ return new Promise((ok, ko) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = ko; document.head.appendChild(s); }); }
+async function toggleScan(){
+  S.scan = !S.scan; $('bScan').classList.toggle('on', S.scan);
+  if (!S.scan){ S.dets = []; $('ai').textContent = 'OFF'; return; }
+  if (S.model || S.loadingModel) return;
+  S.loadingModel = true; $('ai').textContent = 'CARGANDO'; log('Cargando red neuronal…');
+  try {
+    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+    S.model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    log('Red neuronal en línea'); say('Sistema de reconocimiento en línea');
+  } catch (e) { log('No se pudo cargar la IA'); S.scan = false; $('bScan').classList.remove('on'); $('ai').textContent = 'ERROR'; }
+  S.loadingModel = false;
+}
+async function detect(now){
+  if (!S.scan || !S.model || S.busy || now - S.lastDet < 180 || video.readyState < 2) return;
+  S.busy = true; S.lastDet = now;
+  try {
+    const t = performance.now();
+    const preds = await S.model.detect(video, 12, .5);
+    $('ai').textContent = Math.round(performance.now() - t) + ' ms';
+    S.dets = preds.map(p => ({ cls: p.class, score: p.score, bbox: p.bbox }));
+    for (const d of S.dets){
+      const last = S.seen.get(d.cls) || 0;
+      if (now - last > 15000){ const n = (LBL[d.cls] || [d.cls])[0]; log('Detectado: ' + n); say(n + ' detectado'); }
+      S.seen.set(d.cls, now);
+    }
+    if (S.lock){ // mantener el objetivo: el más cercano de la misma clase
+      let best = null, bd = 1e9;
+      for (const d of S.dets) if (d.cls === S.lock.cls){ const cx = d.bbox[0] + d.bbox[2]/2, cy = d.bbox[1] + d.bbox[3]/2; const dd = Math.hypot(cx - S.lock.cx, cy - S.lock.cy); if (dd < bd){ bd = dd; best = d; } }
+      if (best) setLock(best);
+    }
+  } catch (e) {}
+  S.busy = false;
+}
+// conversión de coordenadas del vídeo a pantalla (object-fit: cover)
+function vmap(){ const vw = video.videoWidth || W, vh = video.videoHeight || H; const s = Math.max(W / vw, H / vh); return { s, ox: (W - vw * s) / 2, oy: (H - vh * s) / 2, vw, vh }; }
+function toScreen(b){ const m = vmap(); let x = b[0] * m.s + m.ox; const w = b[2] * m.s; if (S.facing === 'user') x = W - x - w; return [x, b[1] * m.s + m.oy, w, b[3] * m.s]; }
+function distOf(d){ const real = (LBL[d.cls] || [0, .5])[1]; const m = vmap(); const fpx = (m.vh / 2) / Math.tan(S.vFov * Math.PI / 360); return real * fpx / Math.max(d.bbox[3], 1); }
+function setLock(d){ S.lock = { cls: d.cls, score: d.score, bbox: d.bbox, cx: d.bbox[0] + d.bbox[2]/2, cy: d.bbox[1] + d.bbox[3]/2, t: performance.now() }; }
+
+cv.addEventListener('click', e => {
+  for (const d of S.dets){ const [x, y, w, h] = toScreen(d.bbox); if (e.clientX >= x && e.clientX <= x + w && e.clientY >= y && e.clientY <= y + h){ setLock(d); const n = (LBL[d.cls] || [d.cls])[0]; log('Objetivo fijado: ' + n); say('Objetivo fijado. ' + n); return; } }
+  if (S.lock){ S.lock = null; log('Objetivo liberado'); }
+});
+
+// --- brillo de la escena
+const lc = document.createElement('canvas'); lc.width = lc.height = 16; const lctx = lc.getContext('2d', { willReadFrequently: true });
+function sampleLight(){ if (video.readyState < 2) return; lctx.drawImage(video, 0, 0, 16, 16); const px = lctx.getImageData(0, 0, 16, 16).data; let s = 0; for (let i = 0; i < px.length; i += 4) s += .2126*px[i] + .7152*px[i+1] + .0722*px[i+2]; S.lux = s / 256 / 255 * 100; }
+
+// --- dibujo del HUD
+const C = '#5fe6ff', CD = 'rgba(95,230,255,.4)', WARN = '#ffb547';
+function line(x1, y1, x2, y2){ ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function draw(now){
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2, ppd = H / S.vFov;
+  ctx.lineWidth = 1.2; ctx.strokeStyle = C; ctx.fillStyle = C; ctx.font = '600 10px "JetBrains Mono",monospace';
+  ctx.shadowColor = 'rgba(95,230,255,.7)'; ctx.shadowBlur = 6;
+
+  // horizonte artificial y escalera de inclinación
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-S.roll * Math.PI / 180); ctx.translate(0, S.pitch * ppd);
+  ctx.strokeStyle = CD; ctx.textAlign = 'left';
+  for (let p = -30; p <= 30; p += 10){
+    const y = -p * ppd, w = p === 0 ? W * .42 : 46;
+    if (p === 0){ ctx.strokeStyle = C; line(-w, y, -70, y); line(70, y, w, y); ctx.strokeStyle = CD; continue; }
+    ctx.setLineDash(p < 0 ? [5, 5] : []); line(-70 - w, y, -70, y); line(70, y, 70 + w, y); ctx.setLineDash([]);
+    ctx.fillStyle = CD; ctx.fillText(Math.abs(p), 70 + w + 4, y + 3); ctx.fillStyle = C;
+  }
+  ctx.restore();
+
+  // retícula central con anillo giratorio
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.beginPath(); ctx.arc(0, 0, 54, 0, Math.PI * 2); ctx.strokeStyle = CD; ctx.stroke();
+  ctx.rotate(now / 2400); ctx.strokeStyle = C; ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++){ ctx.beginPath(); ctx.arc(0, 0, 62, i * 2.094, i * 2.094 + 1.2); ctx.stroke(); }
+  ctx.rotate(-now / 1200); ctx.lineWidth = 1; ctx.strokeStyle = CD;
+  for (let i = 0; i < 36; i++){ const a = i * Math.PI / 18, r1 = 70, r2 = i % 3 ? 74 : 80; line(Math.cos(a)*r1, Math.sin(a)*r1, Math.cos(a)*r2, Math.sin(a)*r2); }
+  ctx.restore();
+  ctx.strokeStyle = C; line(cx - 14, cy, cx - 4, cy); line(cx + 4, cy, cx + 14, cy); line(cx, cy - 14, cx, cy - 4); line(cx, cy + 4, cx, cy + 14);
+
+  // cinta de brújula
+  const tapeY = H - $('bar').offsetHeight - 26, tw = Math.min(W * .8, 420), pxDeg = tw / 90;
+  ctx.save(); ctx.beginPath(); ctx.rect(cx - tw/2, tapeY - 20, tw, 40); ctx.clip();
+  ctx.textAlign = 'center';
+  if (S.heading != null){
+    const h = S.heading;
+    for (let d = Math.floor((h - 50) / 5) * 5; d <= h + 50; d += 5){
+      const x = cx + (d - h) * pxDeg, dd = (d % 360 + 360) % 360;
+      const major = dd % 45 === 0;
+      ctx.globalAlpha = 1 - Math.abs(x - cx) / (tw / 2) * .8;
+      line(x, tapeY + 8, x, tapeY + (major ? -4 : dd % 15 === 0 ? 2 : 5));
+      if (major){ ctx.font = '700 12px "Chakra Petch",sans-serif'; ctx.fillText(CARD[dd / 45], x, tapeY - 8); }
+      else if (dd % 15 === 0){ ctx.font = '10px "JetBrains Mono",monospace'; ctx.fillText(dd, x, tapeY - 8); }
+    }
+    ctx.globalAlpha = 1;
+  } else { ctx.fillText('BRÚJULA SIN SEÑAL', cx, tapeY); }
+  ctx.restore();
+  ctx.beginPath(); ctx.moveTo(cx, tapeY + 10); ctx.lineTo(cx - 6, tapeY + 18); ctx.lineTo(cx + 6, tapeY + 18); ctx.closePath(); ctx.fill();
+
+  // gráfica de fuerza G
+  const gx = W - 150 - 10, gy = H * .5 + 40;
+  if (W > 340){
+    ctx.strokeStyle = CD; ctx.strokeRect(gx, gy, 140, 40); ctx.strokeStyle = C; ctx.beginPath();
+    S.gHist.forEach((g, i) => { const x = gx + i / 89 * 140, y = gy + 40 - Math.min(g / 2, 1) * 40; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    ctx.fillStyle = CD; ctx.textAlign = 'left'; ctx.fillText('G · 3 s', gx + 3, gy + 11); ctx.fillStyle = C;
+  }
+
+  // nivel de audio
+  if (S.db != null){ const bx = W - 150 - 10 - 18, by = H * .5 + 40 - 40, lv = Math.max(0, Math.min(1, (S.db + 60) / 60)); ctx.strokeStyle = CD; ctx.strokeRect(bx, by, 10, 80); ctx.fillStyle = lv > .85 ? '#ff4d5e' : C; ctx.fillRect(bx + 1, by + 80 - lv * 80, 8, lv * 80); ctx.fillStyle = C; }
+
+  // detecciones
+  ctx.textAlign = 'left'; S.used = [];
+  for (const d of S.dets){
+    const [x, y, w, h] = toScreen(d.bbox), locked = S.lock && S.lock.cls === d.cls && Math.abs(S.lock.bbox[0] - d.bbox[0]) < 1;
+    const col = locked ? WARN : C; ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = locked ? 2 : 1.4;
+    const k = Math.min(18, w / 3, h / 3);
+    [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, sx, sy]) => { line(px, py, px + k * sx, py); line(px, py, px, py + k * sy); });
+    const name = (LBL[d.cls] || [d.cls])[0].toUpperCase();
+    const tag = name + ' ' + Math.round(d.score * 100) + '% · ' + fmt(distOf(d), 1) + ' m';
+    ctx.font = '700 11px "Chakra Petch",sans-serif';
+    const tw2 = ctx.measureText(tag).width + 10;
+    const [lx, ly] = placeLabel(x, y, w, h, tw2);
+    ctx.globalAlpha = .75; ctx.fillStyle = 'rgba(2,14,20,.8)'; ctx.fillRect(lx, ly - 18, tw2, 16); ctx.globalAlpha = 1;
+    ctx.fillStyle = col; ctx.fillText(tag, lx + 5, ly - 6);
+    if (locked){ ctx.save(); ctx.translate(x + w/2, y + h/2); ctx.rotate(now / 600); ctx.beginPath(); ctx.arc(0, 0, Math.min(w, h) / 2 + 6, 0, Math.PI * 1.4); ctx.stroke(); ctx.restore(); }
+  }
+  ctx.lineWidth = 1.2; ctx.shadowBlur = 0;
+}
+
+function hits(x1, y1, x2, y2){ for (const p of S.panels) if (x1 < p[2] && x2 > p[0] && y1 < p[3] && y2 > p[1]) return true; return false; }
+// prueba arriba, dentro arriba, abajo y dentro abajo de la caja; ly es la línea base inferior de la etiqueta (alto 18)
+function placeLabel(x, y, w, h, tw){
+  const lx = Math.max(4, Math.min(x, W - tw - 4));
+  const cands = [y, y + 20, y + h + 20, y + h - 2].map(v => Math.max(20, Math.min(v, H - 4)));
+  for (const ly of cands) if (!hits(lx, ly - 18, lx + tw, ly) && !S.used.some(u => lx < u[2] && lx + tw > u[0] && ly - 18 < u[3] && ly > u[1])){ S.used.push([lx, ly - 18, lx + tw, ly]); return [lx, ly]; }
+  // sin hueco libre: dentro de la caja, desplazada horizontalmente fuera de los paneles si se puede
+  let ly = cands[1], bx = lx;
+  for (const p of S.panels) if (bx < p[2] && bx + tw > p[0] && ly - 18 < p[3] && ly > p[1]) bx = p[2] + tw < W ? p[2] : p[0] - tw;
+  bx = Math.max(4, Math.min(bx, W - tw - 4)); S.used.push([bx, ly - 18, bx + tw, ly]); return [bx, ly];
+}
+
+// --- panel de objetivo
+function updateTarget(now){
+  const el = $('target');
+  if (!S.lock || now - S.lock.t > 3000){ if (S.lock && now - S.lock.t > 3000){ log('Objetivo perdido'); S.lock = null; } el.hidden = true; return; }
+  el.hidden = false;
+  $('tName').textContent = (LBL[S.lock.cls] || [S.lock.cls])[0];
+  $('tConf').textContent = Math.round(S.lock.score * 100) + '%';
+  $('tDist').textContent = fmt(distOf(S.lock), 1) + ' m';
+  if (S.heading != null){ const m = vmap(); const hfov = S.vFov * (m.vw / m.vh); const off = ((S.lock.cx / m.vw) - .5) * hfov; const b = (S.heading + off + 360) % 360; $('tBrg').textContent = fmt(b, 0) + '° ' + card(b); }
+}
+
+// --- bucle principal
+let lastUI = 0, lastLight = 0;
+function loop(now){
+  S.frames++; if (now - S.t0 >= 1000){ S.fps = S.frames; S.frames = 0; S.t0 = now; }
+  if (S.mic){ S.mic.an.getFloatTimeDomainData(S.mic.buf); let s = 0; for (const v of S.mic.buf) s += v * v; S.db = 20 * Math.log10(Math.sqrt(s / S.mic.buf.length) + 1e-8); }
+  if (now - lastLight > 500){ sampleLight(); lastLight = now; }
+  detect(now); draw(now);
+  if (now - lastUI > 100){
+    lastUI = now; const d = new Date();
+    $('clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    $('date').textContent = d.toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase();
+    $('fps').textContent = S.fps;
+    $('net').textContent = navigator.onLine ? 'EN LÍNEA' : 'SIN RED';
+    $('lux').textContent = S.lux == null ? '—' : fmt(S.lux, 0) + '%';
+    $('hdg').textContent = S.heading == null ? '—' : fmt(S.heading, 0) + '° ' + card(S.heading);
+    $('pitch').textContent = fmt(S.pitch, 1) + '°'; $('roll').textContent = fmt(S.roll, 1) + '°';
+    const gEl = $('gf'); gEl.textContent = fmt(S.g, 2) + ' g'; gEl.style.color = S.g > 1.8 ? 'var(--crit)' : '';
+    $('db').textContent = S.db == null ? '—' : fmt(S.db, 0) + ' dBFS';
+    updateTarget(now);
+    if (now - (S.lastMeasure || 0) > 400){ measurePanels(); S.lastMeasure = now; }
+  }
+  requestAnimationFrame(loop);
+}
+
+// --- captura
+$('bShot').addEventListener('click', () => {
+  const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const x = c.getContext('2d');
+  const m = vmap(); x.save(); x.scale(DPR, DPR);
+  if (S.facing === 'user'){ x.translate(W, 0); x.scale(-1, 1); }
+  x.drawImage(video, m.ox, m.oy, m.vw * m.s, m.vh * m.s); x.restore();
+  x.drawImage(cv, 0, 0);
+  x.scale(DPR, DPR); x.fillStyle = C; x.font = '600 12px "JetBrains Mono",monospace';
+  const d = new Date(); x.fillText(d.toLocaleString('es') + (S.heading != null ? '  RUMBO ' + Math.round(S.heading) + '°' : '') + '  ' + $('lat').textContent + ' ' + $('lon').textContent, 12, H - 14);
+  $('shotImg').src = c.toDataURL('image/jpeg', .9); $('shot').hidden = false; say('Captura registrada');
+});
+$('shotClose').addEventListener('click', () => { $('shot').hidden = true; });
+
+$('bScan').addEventListener('click', toggleScan);
+$('bMic').addEventListener('click', toggleMic);
+$('bVoice').addEventListener('click', () => { S.voice = !S.voice; $('bVoice').classList.toggle('on', S.voice); if (S.voice) say('Asistente de voz activado'); });
+$('bFlip').addEventListener('click', async () => { S.facing = S.facing === 'environment' ? 'user' : 'environment'; S.lock = null; try { await startCam(); } catch (e) { log('No se pudo cambiar de cámara'); } });
+
+// --- arranque (iOS exige un toque del usuario para pedir permisos de movimiento)
+$('go').addEventListener('click', async () => {
+  $('err').textContent = '';
+  if (!window.isSecureContext){ $('err').textContent = 'La cámara solo funciona con https. Abre esta página desde una dirección https://.'; return; }
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) await DeviceMotionEvent.requestPermission().catch(() => 'denied');
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) await DeviceOrientationEvent.requestPermission().catch(() => 'denied');
+  } catch (e) {}
+  addEventListener('devicemotion', onMotion);
+  addEventListener('deviceorientationabsolute', onOrient);
+  addEventListener('deviceorientation', onOrient);
+  try { await startCam(); }
+  catch (e) { $('err').textContent = 'Sin acceso a la cámara. Revisa Ajustes › Safari › Cámara y vuelve a intentarlo.'; return; }
+  startGeo(); startBattery();
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+  $('boot').hidden = true; measurePanels();
+  log('Sistemas en línea'); log('Toca un objeto detectado para fijarlo');
+  requestAnimationFrame(loop);
+});
+})();
+</script>
+</body>
+</html>
