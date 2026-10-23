@@ -81,8 +81,18 @@ html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidd
 #shot img{max-width:100%;max-height:75vh;border:1px solid var(--hud)}
 #shot p{font-size:12px;color:var(--hud);margin:0;text-align:center}
 #shot button{font:700 12px var(--display);letter-spacing:.2em;background:var(--hud);color:#02080c;border:0;padding:12px 24px}
+#markSub{top:calc(env(safe-area-inset-top,0px) + 254px);left:calc(env(safe-area-inset-left,0px) + 10px);right:calc(env(safe-area-inset-right,0px) + 10px);color:var(--ink);font-size:12px;line-height:1.45;border-color:var(--hud)}
+#markSub.user{opacity:.75}
+#markTxt{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+#bar button#bMark{color:var(--warn);border-color:var(--warn)}
+#bar button#bMark.on{background:rgba(255,181,71,.25);color:var(--ink);animation:live 1.2s ease-in-out infinite}
+@keyframes live{50%{box-shadow:0 0 14px rgba(255,181,71,.7)}}
+@media (orientation:landscape) and (max-height:540px){
+  #markSub{top:calc(env(safe-area-inset-top,0px) + 10px);left:calc(env(safe-area-inset-left,0px) + 150px);right:calc(env(safe-area-inset-right,0px) + 150px);font-size:11px}
+  #markTxt{-webkit-line-clamp:3}
+}
 [hidden]{display:none!important}
-@media (prefers-reduced-motion:reduce){#ring{animation:none}#log div{animation:none}}
+@media (prefers-reduced-motion:reduce){#ring,#bar button#bMark.on{animation:none}#log div{animation:none}}
 </style>
 </head>
 <body>
@@ -100,7 +110,9 @@ html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidd
   <div class="row"><span>RED</span><b id="net">—</b></div>
   <div class="row"><span>IA</span><b id="ai">OFF</b></div>
   <div class="row"><span>LUZ</span><b id="lux">—</b></div>
+  <div class="row" id="markRow" hidden><span>MARK</span><b id="markSt">—</b></div>
 </div>
+<div class="panel" id="markSub" hidden><h3>MARK</h3><div id="markTxt"></div></div>
 <div class="panel" id="pL">
   <h3>POSICIÓN</h3>
   <div class="row"><span>LAT</span><b id="lat">—</b></div>
@@ -127,6 +139,7 @@ html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidd
 <div id="log"></div>
 
 <div id="bar">
+  <button id="bMark" type="button" hidden>MARK</button>
   <button id="bScan" type="button">ESCANEO</button>
   <button id="bVoice" type="button">VOZ</button>
   <button id="bMic" type="button">AUDIO</button>
@@ -187,7 +200,7 @@ function resize(){ DPR = Math.min(window.devicePixelRatio || 1, 2); W = innerWid
 // ángulo de la pantalla respecto a la posición vertical natural (0, 90, -90, 180)
 function screenAngle(){ if (typeof window.orientation === 'number') return window.orientation; const a = screen.orientation && screen.orientation.angle; return a ? (a > 180 ? a - 360 : a) : 0; }
 // zonas ocupadas por paneles, para que las etiquetas de objetos no se monten encima
-function measurePanels(){ S.panels = ['pTL','pTR','pL','pR','target','log','bar'].map($).filter(el => el && !el.hidden && el.offsetWidth).map(el => { const b = el.getBoundingClientRect(); return [b.left - 4, b.top - 4, b.right + 4, b.bottom + 4]; }); }
+function measurePanels(){ S.panels = ['pTL','pTR','pL','pR','target','log','bar','markSub'].map($).filter(el => el && !el.hidden && el.offsetWidth).map(el => { const b = el.getBoundingClientRect(); return [b.left - 4, b.top - 4, b.right + 4, b.bottom + 4]; }); }
 addEventListener('resize', resize); addEventListener('orientationchange', () => setTimeout(resize, 300)); resize();
 
 // --- cámara
@@ -447,6 +460,114 @@ $('bMic').addEventListener('click', toggleMic);
 $('bVoice').addEventListener('click', () => { S.voice = !S.voice; $('bVoice').classList.toggle('on', S.voice); if (S.voice) say('Asistente de voz activado'); });
 $('bFlip').addEventListener('click', async () => { S.facing = S.facing === 'environment' ? 'user' : 'environment'; S.lock = null; try { await startCam(); } catch (e) { log('No se pudo cambiar de cámara'); } });
 
+// --- enlace con MARK: solo cuando el propio MARK sirve el visor en /hud (tras escanear su QR)
+const MARK = { on: location.pathname.replace(/\/+$/, '') === '/hud', token: null, ws: null, live: null, subTimer: 0, retried: false };
+const wsBase = () => (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host;
+function markStatus(t, warn){ $('markSt').textContent = t; $('markSt').style.color = warn ? 'var(--warn)' : ''; }
+async function markAuth(){
+  try { MARK.token = sessionStorage.getItem('MARK_token'); } catch (e) {}
+  if (MARK.token) return true;
+  let dev = null; try { dev = localStorage.getItem('MARK_device_token'); } catch (e) {}
+  if (!dev) return false;
+  try { // dispositivo ya emparejado: pide una sesión nueva sin volver a escanear
+    const r = await fetch('/api/device-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_token: dev }) });
+    const j = await r.json(); if (!j.ok) return false;
+    MARK.token = j.token; try { sessionStorage.setItem('MARK_token', j.token); sessionStorage.setItem('MARK_key', j.key); } catch (e) {}
+    return true;
+  } catch (e) { return false; }
+}
+function markSay(speaker, text){
+  const el = $('markSub'), mine = speaker !== 'MARK';
+  el.hidden = false; el.classList.toggle('user', mine);
+  el.querySelector('h3').textContent = mine ? 'TÚ' : 'MARK'; $('markTxt').textContent = text;
+  clearTimeout(MARK.subTimer); MARK.subTimer = setTimeout(() => { el.hidden = true; measurePanels(); }, mine ? 6000 : 14000);
+  measurePanels();
+  if (!mine) say(text);
+}
+async function markConnect(){
+  if (!(await markAuth())){ markStatus('SIN QR', true); log('Escanea el QR «VISOR HUD» de MARK'); return; }
+  const ws = new WebSocket(wsBase() + '/ws?token=' + encodeURIComponent(MARK.token));
+  let fresh = false; MARK.ws = ws;
+  ws.onopen = () => { MARK.retried = false; markStatus('ENLAZADO'); log('Enlace con MARK establecido'); setTimeout(() => { fresh = true; }, 800); };
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+    if (m.type === 'status') markStatus(m.state !== 'active' ? 'DORMIDO' : MARK.live ? 'ESCUCHANDO' : 'ACTIVO', m.state !== 'active');
+    if (!fresh) return;   // el servidor reenvía el historial al conectar: no repetirlo
+    if (m.type === 'log') markSay(m.speaker, m.text);
+    if (m.type === 'sys') log(m.text);
+  };
+  ws.onclose = e => {
+    MARK.ws = null; stopLive();
+    if (e.code === 4001){ // sesión caducada: intenta una vez con el emparejamiento guardado
+      try { sessionStorage.removeItem('MARK_token'); } catch (_) {}
+      MARK.token = null;
+      if (!MARK.retried){ MARK.retried = true; markConnect(); } else markStatus('SIN QR', true);
+      return;
+    }
+    markStatus('RECONECTANDO', true); setTimeout(markConnect, 3000);
+  };
+}
+// Float32 → PCM 16 bits a 16 kHz, el formato que espera MARK (igual que su panel móvil)
+function toPcm16(f32, rate){
+  let s = f32;
+  if (rate !== 16000){ const k = rate / 16000, n = Math.round(f32.length / k); s = new Float32Array(n); for (let i = 0; i < n; i++) s[i] = f32[Math.min(Math.round(i * k), f32.length - 1)]; }
+  const out = new Int16Array(s.length); for (let i = 0; i < s.length; i++) out[i] = Math.max(-32768, Math.min(32767, Math.round(s[i] * 32768)));
+  return out;
+}
+async function markLive(){
+  if (MARK.live){ stopLive(); return; }
+  if (!MARK.token){ log('Escanea el QR «VISOR HUD» de MARK'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { log('Micrófono denegado'); return; }
+  let ac; try { ac = new AudioContext({ sampleRate: 16000 }); } catch (_) { ac = new (window.AudioContext || window.webkitAudioContext)(); }
+  if (ac.state === 'suspended') await ac.resume();
+  const q = '?token=' + encodeURIComponent(MARK.token);
+  const aws = new WebSocket(wsBase() + '/ws/phone-audio' + q), vws = new WebSocket(wsBase() + '/ws/phone-video' + q);
+  aws.binaryType = vws.binaryType = 'arraybuffer';
+  const L = MARK.live = { stream, ac, aws, vws, node: null, timer: 0 };
+  aws.onopen = async () => {
+    const rate = ac.sampleRate, src = ac.createMediaStreamSource(stream);
+    let buf = [], len = 0;
+    const push = f32 => {
+      if (window.speechSynthesis && speechSynthesis.speaking) return;   // no mandarle a MARK su propia voz
+      const c = toPcm16(f32, rate); buf.push(c); len += c.length;
+      if (len >= 1024){ const out = new Int16Array(len); let o = 0; for (const b of buf){ out.set(b, o); o += b.length; } if (aws.readyState === 1) aws.send(out.buffer); buf = []; len = 0; }
+    };
+    try {
+      const url = URL.createObjectURL(new Blob(["class J extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice());return true}}registerProcessor('j',J)"], { type: 'application/javascript' }));
+      await ac.audioWorklet.addModule(url); URL.revokeObjectURL(url);
+      L.node = new AudioWorkletNode(ac, 'j'); L.node.port.onmessage = e => push(e.data); src.connect(L.node);
+    } catch (_) {
+      L.node = ac.createScriptProcessor(4096, 1, 1); L.node.onaudioprocess = e => push(e.inputBuffer.getChannelData(0)); src.connect(L.node); L.node.connect(ac.destination);
+    }
+    $('bMark').classList.add('on'); markStatus('ESCUCHANDO'); log('MARK te escucha y ve por la cámara');
+  };
+  aws.onerror = () => log('No se pudo enviar la voz a MARK');
+  aws.onclose = () => stopLive();
+  // un fotograma por segundo de lo que ve el visor
+  const fc = document.createElement('canvas');
+  L.timer = setInterval(() => {
+    if (vws.readyState !== 1 || vws.bufferedAmount > 0 || video.readyState < 2) return;
+    const k = Math.min(1, 768 / Math.max(video.videoWidth, video.videoHeight));
+    fc.width = Math.round(video.videoWidth * k); fc.height = Math.round(video.videoHeight * k);
+    fc.getContext('2d').drawImage(video, 0, 0, fc.width, fc.height);
+    fc.toBlob(b => { if (b && vws.readyState === 1) b.arrayBuffer().then(ab => vws.send(ab)); }, 'image/jpeg', .6);
+  }, 1000);
+  if (/DORMIDO/.test($('markSt').textContent)) fetch('/api/wake', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token } }).catch(() => {});
+}
+function stopLive(){
+  const L = MARK.live; if (!L) return; MARK.live = null;
+  clearInterval(L.timer);
+  try { L.node && L.node.disconnect(); } catch (_) {}
+  try { L.ac.close(); } catch (_) {}
+  L.stream.getTracks().forEach(t => t.stop());
+  [L.aws, L.vws].forEach(w => { if (w.readyState < 2) w.close(); });
+  $('bMark').classList.remove('on'); markStatus(MARK.ws ? 'ENLAZADO' : '—', !MARK.ws);
+}
+$('bMark').addEventListener('click', markLive);
+if (MARK.on){ $('markRow').hidden = false; $('bMark').hidden = false; $('boot').querySelector('p').textContent = 'Enlace con MARK. Se pedirá permiso para la cámara, el micrófono, el movimiento y la ubicación.'; }
+
 // --- arranque (iOS exige un toque del usuario para pedir permisos de movimiento)
 $('go').addEventListener('click', async () => {
   $('err').textContent = '';
@@ -464,6 +585,7 @@ $('go').addEventListener('click', async () => {
   try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
   $('boot').hidden = true; measurePanels();
   log('Sistemas en línea'); log('Toca un objeto detectado para fijarlo');
+  if (MARK.on) markConnect();
   requestAnimationFrame(loop);
 });
 })();
