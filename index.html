@@ -294,7 +294,7 @@ async function toggleScan(){
   S.loadingModel = false;
 }
 async function detect(now){
-  if (!S.scan || !S.model || S.busy || now - S.lastDet < 180 || video.readyState < 2) return;
+  if (!S.scan || !S.model || S.busy || now - S.lastDet < 300 || video.readyState < 2) return;   // ~3 análisis por segundo
   S.busy = true; S.lastDet = now;
   try {
     const t = performance.now();
@@ -389,8 +389,8 @@ function draw(now){
   // nivel de audio
   if (S.db != null){ const bx = W - 150 - 10 - 18, by = H * .5 + 40 - 40, lv = Math.max(0, Math.min(1, (S.db + 60) / 60)); ctx.strokeStyle = CD; ctx.strokeRect(bx, by, 10, 80); ctx.fillStyle = lv > .85 ? '#ff4d5e' : C; ctx.fillRect(bx + 1, by + 80 - lv * 80, 8, lv * 80); ctx.fillStyle = C; }
 
-  // detecciones
-  ctx.textAlign = 'left'; S.used = [];
+  // detecciones (sin resplandor: es lo más costoso de dibujar con muchas cajas)
+  ctx.shadowBlur = 0; ctx.textAlign = 'left'; S.used = [];
   for (const d of S.dets){
     const [x, y, w, h] = toScreen(d.bbox), locked = S.lock && S.lock.cls === d.cls && Math.abs(S.lock.bbox[0] - d.bbox[0]) < 1;
     const col = locked ? WARN : C; ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = locked ? 2 : 1.4;
@@ -432,16 +432,22 @@ function updateTarget(now){
 }
 
 // --- bucle principal
-let lastUI = 0, lastLight = 0;
+// ahorro de batería: el HUD se dibuja a 30 fps como máximo (los iPhone Pro irían a 120),
+// los paneles de texto se refrescan 4 veces por segundo y nada corre con la pantalla oculta
+const FRAME_MS = 1000 / 30 - 2;
+let lastUI = 0, lastLight = 0, lastDraw = 0, lastDay = -1;
 function loop(now){
+  requestAnimationFrame(loop);
+  if (document.hidden || now - lastDraw < FRAME_MS) return;
+  lastDraw = now;
   S.frames++; if (now - S.t0 >= 1000){ S.fps = S.frames; S.frames = 0; S.t0 = now; }
   if (S.mic){ S.mic.an.getFloatTimeDomainData(S.mic.buf); let s = 0; for (const v of S.mic.buf) s += v * v; S.db = 20 * Math.log10(Math.sqrt(s / S.mic.buf.length) + 1e-8); }
-  if (now - lastLight > 500){ sampleLight(); lastLight = now; }
+  if (now - lastLight > 1000){ sampleLight(); lastLight = now; }
   detect(now); draw(now);
-  if (now - lastUI > 100){
+  if (now - lastUI > 250){
     lastUI = now; const d = new Date();
     $('clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-    $('date').textContent = d.toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase();
+    if (d.getDate() !== lastDay){ lastDay = d.getDate(); $('date').textContent = d.toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase(); }
     $('fps').textContent = S.fps;
     $('net').textContent = navigator.onLine ? 'EN LÍNEA' : 'SIN RED';
     $('lux').textContent = S.lux == null ? '—' : fmt(S.lux, 0) + '%';
@@ -452,7 +458,6 @@ function loop(now){
     updateTarget(now);
     if (now - (S.lastMeasure || 0) > 400){ measurePanels(); S.lastMeasure = now; }
   }
-  requestAnimationFrame(loop);
 }
 
 // --- captura
@@ -565,9 +570,9 @@ async function markConnect(){
   let fresh = false; MARK.ws = ws;
   ws.onopen = () => {
     MARK.retried = false; markStatus('ENLAZADO'); log('Enlace con MARK establecido'); setTimeout(() => { fresh = true; }, 800);
-    ws.send(JSON.stringify({ type: 'hud_hello' }));
+    ws.send(JSON.stringify({ type: 'hud_hello' })); startEyes();
     clearInterval(MARK.stateTimer);
-    MARK.stateTimer = setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'hud_state', state: hudState() })); }, 1000);
+    MARK.stateTimer = setInterval(() => { if (!document.hidden && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hud_state', state: hudState() })); }, 1000);
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (_) { return; }
@@ -578,7 +583,7 @@ async function markConnect(){
     if (m.type === 'sys') log(m.text);
   };
   ws.onclose = e => {
-    MARK.ws = null; clearInterval(MARK.stateTimer); stopLive();
+    MARK.ws = null; clearInterval(MARK.stateTimer); stopLive(); stopEyes();
     if (e.code === 4001){ // sesión caducada: intenta una vez con el emparejamiento guardado
       try { sessionStorage.removeItem('MARK_token'); } catch (_) {}
       MARK.token = null;
@@ -588,6 +593,27 @@ async function markConnect(){
     markStatus('RECONECTANDO', true); setTimeout(markConnect, 3000);
   };
 }
+// --- ojos: mientras el visor esté enlazado manda 1 foto por segundo al PC. El PC guarda solo la
+// última y MARK la usa únicamente cuando le preguntas; si no, simplemente se reemplaza por la siguiente.
+const eyeCanvas = document.createElement('canvas');
+function startEyes(){
+  if (MARK.eyes || !MARK.token) return;
+  const vws = new WebSocket(wsBase() + '/ws/phone-video?token=' + encodeURIComponent(MARK.token));
+  vws.binaryType = 'arraybuffer';
+  const E = MARK.eyes = { vws, timer: 0 };
+  E.timer = setInterval(() => {
+    if (document.hidden || vws.readyState !== 1 || vws.bufferedAmount > 0 || video.readyState < 2) return;
+    const k = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));   // suficiente para que MARK reconozca la escena
+    eyeCanvas.width = Math.round(video.videoWidth * k); eyeCanvas.height = Math.round(video.videoHeight * k);
+    const x = eyeCanvas.getContext('2d');
+    if (S.facing === 'user'){ x.save(); x.translate(eyeCanvas.width, 0); x.scale(-1, 1); }   // misma orientación que ves en pantalla
+    x.drawImage(video, 0, 0, eyeCanvas.width, eyeCanvas.height);
+    if (S.facing === 'user') x.restore();
+    eyeCanvas.toBlob(b => { if (b && vws.readyState === 1) b.arrayBuffer().then(ab => vws.send(ab)); }, 'image/jpeg', .6);
+  }, 1000);
+  vws.onclose = () => { clearInterval(E.timer); if (MARK.eyes === E) MARK.eyes = null; };
+}
+function stopEyes(){ const E = MARK.eyes; if (!E) return; MARK.eyes = null; clearInterval(E.timer); if (E.vws.readyState < 2) E.vws.close(); }
 // Float32 → PCM 16 bits a 16 kHz, el formato que espera MARK (igual que su panel móvil)
 function toPcm16(f32, rate){
   let s = f32;
@@ -604,10 +630,10 @@ async function markLive(){
   let ac; try { ac = new AudioContext({ sampleRate: 16000 }); } catch (_) { ac = new (window.AudioContext || window.webkitAudioContext)(); }
   if (ac.state === 'suspended') await ac.resume();
   const q = '?token=' + encodeURIComponent(MARK.token);
-  const aws = new WebSocket(wsBase() + '/ws/phone-audio' + q), vws = new WebSocket(wsBase() + '/ws/phone-video' + q);
+  const aws = new WebSocket(wsBase() + '/ws/phone-audio' + q);
   const sws = new WebSocket(wsBase() + '/ws/phone-speaker' + q);   // mientras MARK esté activo, su voz sale por el móvil
-  aws.binaryType = vws.binaryType = sws.binaryType = 'arraybuffer';
-  const L = MARK.live = { stream, ac, aws, vws, sws, node: null, timer: 0, srcs: new Set(), next: 0 };
+  aws.binaryType = sws.binaryType = 'arraybuffer';
+  const L = MARK.live = { stream, ac, aws, sws, node: null, srcs: new Set(), next: 0 };
   sws.onmessage = e => playVoice(e.data);
   aws.onopen = async () => {
     const rate = ac.sampleRate, src = ac.createMediaStreamSource(stream);
@@ -628,29 +654,28 @@ async function markLive(){
   };
   aws.onerror = () => log('No se pudo enviar la voz a MARK');
   aws.onclose = () => stopLive();
-  // un fotograma por segundo de lo que ve el visor
-  const fc = document.createElement('canvas');
-  L.timer = setInterval(() => {
-    if (vws.readyState !== 1 || vws.bufferedAmount > 0 || video.readyState < 2) return;
-    const k = Math.min(1, 768 / Math.max(video.videoWidth, video.videoHeight));
-    fc.width = Math.round(video.videoWidth * k); fc.height = Math.round(video.videoHeight * k);
-    fc.getContext('2d').drawImage(video, 0, 0, fc.width, fc.height);
-    fc.toBlob(b => { if (b && vws.readyState === 1) b.arrayBuffer().then(ab => vws.send(ab)); }, 'image/jpeg', .6);
-  }, 1000);
   if (/DORMIDO/.test($('markSt').textContent)) fetch('/api/wake', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token } }).catch(() => {});
 }
 function stopLive(){
   const L = MARK.live; if (!L) return; MARK.live = null;
-  clearInterval(L.timer);
   L.srcs.forEach(s => { try { s.stop(); } catch (_) {} });
   try { L.node && L.node.disconnect(); } catch (_) {}
   try { L.ac.close(); } catch (_) {}
   L.stream.getTracks().forEach(t => t.stop());
-  [L.aws, L.vws, L.sws].forEach(w => { if (w.readyState < 2) w.close(); });
+  [L.aws, L.sws].forEach(w => { if (w.readyState < 2) w.close(); });
   $('bMark').classList.remove('on'); markStatus(MARK.ws ? 'ENLAZADO' : '—', !MARK.ws);
 }
 $('bMark').addEventListener('click', markLive);
 if (MARK.on){ $('markRow').hidden = false; $('bMark').hidden = false; $('bVoice').hidden = true; $('boot').querySelector('p').textContent = 'Enlace con MARK. Se pedirá permiso para la cámara, el micrófono, el movimiento y la ubicación.'; }
+
+// --- estabilidad al volver al visor: iOS suelta el bloqueo de pantalla y pausa el audio al salir de Safari
+async function keepAwake(){ try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || $('boot').hidden === false) return;
+  keepAwake();
+  if (MARK.live && MARK.live.ac.state !== 'running') MARK.live.ac.resume().catch(() => {});
+  if (video.paused && S.stream) video.play().catch(() => {});
+});
 
 // --- arranque (iOS exige un toque del usuario para pedir permisos de movimiento)
 $('go').addEventListener('click', async () => {
@@ -666,7 +691,7 @@ $('go').addEventListener('click', async () => {
   try { await startCam(); }
   catch (e) { $('err').textContent = 'Sin acceso a la cámara. Revisa Ajustes › Safari › Cámara y vuelve a intentarlo.'; return; }
   startGeo(); startBattery();
-  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+  await keepAwake();
   $('boot').hidden = true; measurePanels();
   log('Sistemas en línea'); log('Toca un objeto detectado para fijarlo');
   if (MARK.on) markConnect();
