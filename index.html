@@ -705,7 +705,7 @@ async function markConnect(){
       return;
     }
     if (!ON_PC_PAGE){   // ¿el PC se apagó? si no responde, MARK nube toma el relevo
-      probePC().then(ok => { if (!LINKED) return; if (ok) setTimeout(markConnect, 2000); else useCloud('El PC dejó de responder: ahora te atiende MARK nube'); });
+      probePC().then(base => { if (!LINKED) return; if (base){ PC_BASE = base; setTimeout(markConnect, 2000); } else useCloud('El PC dejó de responder: ahora te atiende MARK nube'); });
       return;
     }
     markStatus('RECONECTANDO', true); setTimeout(markConnect, 3000);
@@ -814,31 +814,37 @@ function saveSync(d){
   Object.assign(c, { assistant: d.assistant || 'MARK', user: d.user || '', memory: d.memory || '', prompt: d.prompt || '', recent: d.recent || [],
     model: d.model || '', voice: d.voice || 'Charon', syncedAt: Date.now() });
   if (d.pc) c.pc = d.pc;
+  c.pcs = pcList(Object.assign({}, c, { pcs: (d.pcs || []).concat(c.pcs || []) }));   // el PC cambia de IP según la red: se recuerdan varias
   if (d.pair) c.pair = d.pair;
   return cloudStore(c);
 }
 
 // --- un solo MARK: con el PC encendido y a tu alcance manda el PC; si no, MARK nube
+function pcList(c){ return [...new Set([c.pc].concat(c.pcs || []).filter(Boolean))].slice(0, 6); }
+// prueba a la vez todas las direcciones conocidas del PC; devuelve la primera que responde (o null)
 async function probePC(){
-  const pc = cloudCfg().pc; if (!pc || !cloudCfg().pair) return false;
+  const c = cloudCfg(), list = pcList(c); if (!list.length || !c.pair) return null;
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 2500);
-  try { const r = await fetch(pc + '/api/ping', { signal: ctl.signal, cache: 'no-store' }); return r.ok; }
-  catch (e) { return false; }
+  const one = base => fetch(base + '/api/ping', { signal: ctl.signal, cache: 'no-store' }).then(r => { if (!r.ok) throw 0; return base; });
+  try { const base = await Promise.any(list.map(one)); ctl.abort(); return base; }
+  catch (e) { return null; }
   finally { clearTimeout(t); }
 }
 async function chooseBrain(){
-  if (await probePC()){ usePC(); return; }
+  const base = await probePC();
+  if (base){ usePC(base); return; }
   if (cloudCfg().pc) log('El PC está apagado o fuera de alcance: te atiende MARK nube');
   startProbeLoop();
 }
 // en modo nube, cada 30 s mira si el PC volvió (sin cortar una conversación en curso)
 function startProbeLoop(){
   clearInterval(CLOUD.probeTimer); if (!cloudCfg().pc) return;
-  CLOUD.probeTimer = setInterval(async () => { if (LINKED || CLOUD.live || document.hidden) return; if (await probePC()) usePC(); }, 30000);
+  CLOUD.probeTimer = setInterval(async () => { if (LINKED || CLOUD.live || document.hidden) return; const base = await probePC(); if (base) usePC(base); }, 30000);
 }
-function usePC(){
+function usePC(base){
   clearInterval(CLOUD.probeTimer); stopCloud();
-  PC_BASE = cloudCfg().pc; LINKED = true; MARK.on = true; MARK.retried = false; MARK.token = null;
+  const c = cloudCfg(); c.pc = base; cloudStore(c);   // la que funcionó se prueba primero la próxima vez
+  PC_BASE = base; LINKED = true; MARK.on = true; MARK.retried = false; MARK.token = null;
   $('markRow').hidden = false; $('bMark').hidden = false; $('bVoice').hidden = true;
   markStatus('CONECTANDO'); log('PC encendido: te atiende el MARK del PC');
   markConnect();
