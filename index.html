@@ -266,7 +266,10 @@ const CARD = ['N','NE','E','SE','S','SO','O','NO'];
 const card = h => CARD[Math.round(h / 45) % 8];
 function log(msg){ const d = document.createElement('div'); d.textContent = '> ' + msg; $('log').prepend(d); while ($('log').children.length > 5) $('log').lastChild.remove(); }
 // enlazado con MARK: la voz es la de MARK, el visor no habla por su cuenta
-const LINKED = location.pathname.replace(/\/+$/, '') === '/hud';
+// ON_PC_PAGE: el visor lo sirve el propio PC (/hud). En internet (GitHub Pages) LINKED pasa a true
+// cuando el visor llega al PC encendido, y PC_BASE apunta a él; si no, manda MARK nube.
+const ON_PC_PAGE = location.pathname.replace(/\/+$/, '') === '/hud';
+let LINKED = ON_PC_PAGE, PC_BASE = '';
 const CLOUD = { live: null };   // MARK nube: el visor de internet habla con Gemini cuando el PC está apagado
 function say(t){ if (LINKED || cloudReady() || !S.voice ||!('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(t); u.lang = 'es-ES'; u.rate = 1.05; speechSynthesis.speak(u); }
 
@@ -334,7 +337,7 @@ $('pTL').addEventListener('click', async () => {
   if (!$('pTL').classList.contains('tap')) return;
   $('batSetup').hidden = false;
   try {
-    const r = await fetch('/api/battery-setup', { headers: { Authorization: 'Bearer ' + MARK.token } });
+    const r = await fetch(PC_BASE + '/api/battery-setup', { headers: { Authorization: 'Bearer ' + MARK.token } });
     $('batUrl').textContent = (await r.json()).url;
   } catch (e) { $('batUrl').textContent = 'No se pudo obtener la dirección. Comprueba la conexión con MARK.'; }
 });
@@ -576,7 +579,7 @@ async function uploadShot(blob, d){
   const name = 'visor_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.jpg';
   const fd = new FormData(); fd.append('file', blob, name);
   try {
-    const r = await fetch('/api/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token }, body: fd });
+    const r = await fetch(PC_BASE + '/api/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token }, body: fd });
     if (!r.ok) throw new Error(r.status);
     log('Captura guardada en el PC'); $('thumbTxt').textContent = 'EN EL PC ✓';
   } catch (e) { log('No se pudo guardar la captura en el PC'); }
@@ -592,16 +595,28 @@ $('bVoice').addEventListener('click', () => { S.voice = !S.voice; $('bVoice').cl
 $('bFlip').addEventListener('click', async () => { S.facing = S.facing === 'environment' ? 'user' : 'environment'; S.lock = null; try { await startCam(); } catch (e) { log('No se pudo cambiar de cámara'); } });
 
 // --- enlace con MARK: solo cuando el propio MARK sirve el visor en /hud (tras escanear su QR)
-const MARK = { on: location.pathname.replace(/\/+$/, '') === '/hud', token: null, ws: null, live: null, subTimer: 0, retried: false };
-const wsBase = () => (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host;
-function markStatus(t, warn){ $('markSt').textContent = t; $('markSt').style.color = warn ? 'var(--warn)' : ''; }
+const MARK = { on: ON_PC_PAGE, token: null, ws: null, live: null, subTimer: 0, retried: false };
+const wsBase = () => PC_BASE ? PC_BASE.replace(/^http/, 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host;
+function markStatus(t, warn){
+  if (LINKED && !ON_PC_PAGE) t = 'PC · ' + t;   // en internet, deja claro qué cerebro responde
+  $('markSt').textContent = t; $('markSt').style.color = warn ? 'var(--warn)' : '';
+}
 async function markAuth(){
+  if (!ON_PC_PAGE){   // visor de internet: entra con el emparejamiento que llegó al sincronizar
+    if (MARK.token) return true;
+    const pair = cloudCfg().pair; if (!pair) return false;
+    try {
+      const r = await fetch(PC_BASE + '/api/cloud-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pair }) });
+      const j = await r.json(); if (!j.ok) return false;
+      MARK.token = j.token; return true;
+    } catch (e) { return false; }
+  }
   try { MARK.token = sessionStorage.getItem('MARK_token'); } catch (e) {}
   if (MARK.token) return true;
   let dev = null; try { dev = localStorage.getItem('MARK_device_token'); } catch (e) {}
   if (!dev) return false;
   try { // dispositivo ya emparejado: pide una sesión nueva sin volver a escanear
-    const r = await fetch('/api/device-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_token: dev }) });
+    const r = await fetch(PC_BASE + '/api/device-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_token: dev }) });
     const j = await r.json(); if (!j.ok) return false;
     MARK.token = j.token; try { sessionStorage.setItem('MARK_token', j.token); sessionStorage.setItem('MARK_key', j.key); } catch (e) {}
     return true;
@@ -656,12 +671,16 @@ function playVoice(ab){
 function flushVoice(){ const L = liveSession(); if (!L) return; L.srcs.forEach(s => { try { s.stop(); } catch (_) {} }); L.srcs.clear(); L.next = 0; }
 const voicePlaying = () => { const L = liveSession(); return !!(L && L.next && L.ac.currentTime < L.next); };
 async function markConnect(){
-  if (!(await markAuth())){ markStatus('SIN QR', true); log('Escanea el QR «VISOR HUD» de MARK'); return; }
+  if (!(await markAuth())){
+    if (!ON_PC_PAGE){ useCloud('El PC no reconoce este visor: sincroniza de nuevo desde el visor del PC. Mientras, te atiende MARK nube'); return; }
+    markStatus('SIN QR', true); log('Escanea el QR «VISOR HUD» de MARK'); return;
+  }
   const ws = new WebSocket(wsBase() + '/ws?token=' + encodeURIComponent(MARK.token));
   let fresh = false; MARK.ws = ws;
   ws.onopen = () => {
     MARK.retried = false; markStatus('ENLAZADO'); log('Enlace con MARK establecido'); setTimeout(() => { fresh = true; }, 800);
     ws.send(JSON.stringify({ type: 'hud_hello' })); startEyes();
+    if (!ON_PC_PAGE) pcHandshake();
     clearInterval(MARK.stateTimer);
     MARK.stateTimer = setInterval(() => { if (!document.hidden && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hud_state', state: hudState() })); }, 1000);
   };
@@ -676,10 +695,17 @@ async function markConnect(){
   };
   ws.onclose = e => {
     MARK.ws = null; clearInterval(MARK.stateTimer); stopLive(); stopEyes();
+    if (!ON_PC_PAGE && !LINKED) return;   // ya se pasó a MARK nube
     if (e.code === 4001){ // sesión caducada: intenta una vez con el emparejamiento guardado
       try { sessionStorage.removeItem('MARK_token'); } catch (_) {}
       MARK.token = null;
-      if (!MARK.retried){ MARK.retried = true; markConnect(); } else markStatus('SIN QR', true);
+      if (!MARK.retried){ MARK.retried = true; markConnect(); }
+      else if (!ON_PC_PAGE) useCloud('El PC rechazó la sesión: te atiende MARK nube');
+      else markStatus('SIN QR', true);
+      return;
+    }
+    if (!ON_PC_PAGE){   // ¿el PC se apagó? si no responde, MARK nube toma el relevo
+      probePC().then(ok => { if (!LINKED) return; if (ok) setTimeout(markConnect, 2000); else useCloud('El PC dejó de responder: ahora te atiende MARK nube'); });
       return;
     }
     markStatus('RECONECTANDO', true); setTimeout(markConnect, 3000);
@@ -746,7 +772,7 @@ async function markLive(){
   };
   aws.onerror = () => log('No se pudo enviar la voz a MARK');
   aws.onclose = () => stopLive();
-  if (/DORMIDO/.test($('markSt').textContent)) fetch('/api/wake', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token } }).catch(() => {});
+  if (/DORMIDO/.test($('markSt').textContent)) fetch(PC_BASE + '/api/wake', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token } }).catch(() => {});
 }
 function stopLive(){
   const L = MARK.live; if (!L) return; MARK.live = null;
@@ -779,11 +805,66 @@ const b64ToText = s => new TextDecoder().decode(fromB64(s));
   const m = location.hash.match(/^#sync=(.+)$/); if (!m) return;
   history.replaceState(null, '', location.pathname + location.search);
   try {
-    const d = JSON.parse(b64ToText(decodeURIComponent(m[1]))), c = cloudCfg();
-    Object.assign(c, { assistant: d.assistant || 'MARK', user: d.user || '', memory: d.memory || '', prompt: d.prompt || '', model: d.model || '', voice: d.voice || 'Charon', syncedAt: Date.now() });
-    CLOUD.syncNote = cloudStore(c) ? 'Memoria de MARK sincronizada ✓' : 'No se pudo guardar la memoria (¿navegación privada?)';
+    CLOUD.syncNote = saveSync(JSON.parse(b64ToText(decodeURIComponent(m[1])))) ? 'Memoria de MARK sincronizada ✓' : 'No se pudo guardar la memoria (¿navegación privada?)';
   } catch (e) { CLOUD.syncNote = 'El enlace de sincronización llegó incompleto. Vuelve a sincronizar desde el visor del PC'; }
 })();
+// guarda lo que manda el PC (personalidad, memoria, últimas frases y cómo encontrarlo); nunca toca la clave ni el diario
+function saveSync(d){
+  const c = cloudCfg();
+  Object.assign(c, { assistant: d.assistant || 'MARK', user: d.user || '', memory: d.memory || '', prompt: d.prompt || '', recent: d.recent || [],
+    model: d.model || '', voice: d.voice || 'Charon', syncedAt: Date.now() });
+  if (d.pc) c.pc = d.pc;
+  if (d.pair) c.pair = d.pair;
+  return cloudStore(c);
+}
+
+// --- un solo MARK: con el PC encendido y a tu alcance manda el PC; si no, MARK nube
+async function probePC(){
+  const pc = cloudCfg().pc; if (!pc || !cloudCfg().pair) return false;
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 2500);
+  try { const r = await fetch(pc + '/api/ping', { signal: ctl.signal, cache: 'no-store' }); return r.ok; }
+  catch (e) { return false; }
+  finally { clearTimeout(t); }
+}
+async function chooseBrain(){
+  if (await probePC()){ usePC(); return; }
+  if (cloudCfg().pc) log('El PC está apagado o fuera de alcance: te atiende MARK nube');
+  startProbeLoop();
+}
+// en modo nube, cada 30 s mira si el PC volvió (sin cortar una conversación en curso)
+function startProbeLoop(){
+  clearInterval(CLOUD.probeTimer); if (!cloudCfg().pc) return;
+  CLOUD.probeTimer = setInterval(async () => { if (LINKED || CLOUD.live || document.hidden) return; if (await probePC()) usePC(); }, 30000);
+}
+function usePC(){
+  clearInterval(CLOUD.probeTimer); stopCloud();
+  PC_BASE = cloudCfg().pc; LINKED = true; MARK.on = true; MARK.retried = false; MARK.token = null;
+  $('markRow').hidden = false; $('bMark').hidden = false; $('bVoice').hidden = true;
+  markStatus('CONECTANDO'); log('PC encendido: te atiende el MARK del PC');
+  markConnect();
+}
+function useCloud(reason){
+  const ws = MARK.ws;
+  LINKED = false; MARK.on = false; MARK.ws = null; MARK.token = null; PC_BASE = '';
+  clearInterval(MARK.stateTimer); stopLive(); stopEyes();
+  if (ws && ws.readyState < 2) ws.close();
+  cloudInitUi(); if (reason) log(reason); startProbeLoop();
+}
+// al llegar al PC: trae la memoria al día y le entrega lo hablado con MARK nube
+async function pcHandshake(){
+  const auth = { Authorization: 'Bearer ' + MARK.token };
+  try { const r = await fetch(PC_BASE + '/api/cloud-sync', { headers: auth }); if (r.ok) saveSync(await r.json()); } catch (e) {}
+  const sent = (cloudCfg().journal || []).slice();
+  if (!sent.length) return;
+  try {
+    const r = await fetch(PC_BASE + '/api/cloud-journal', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth), body: JSON.stringify({ entries: sent }) });
+    if (!r.ok) return;
+    const c = cloudCfg(); c.journal = (c.journal || []).slice(sent.length);
+    const keys = new Set(sent.filter(e => e.memory).map(e => e.memory.category + '/' + e.memory.key));
+    c.facts = (c.facts || []).filter(f => !keys.has(f.category + '/' + f.key)); cloudStore(c);
+    log('MARK del PC recibió lo que hablaste con MARK nube (' + sent.length + ')');
+  } catch (e) {}
+}
 
 function cloudInitUi(){
   $('pTR').classList.add('tap');
@@ -798,19 +879,23 @@ function cloudInitUi(){
 
 // --- hoja de configuración (panel SISTEMA): en el PC sincroniza la memoria, en internet guarda la clave
 function openCloudSheet(){
-  $('cloudSheet').hidden = false; $('cloudPc').hidden = !LINKED; $('cloudWeb').hidden = LINKED;
-  if (LINKED){ prepareSync(); return; }
+  $('cloudSheet').hidden = false; $('cloudPc').hidden = !ON_PC_PAGE; $('cloudWeb').hidden = ON_PC_PAGE;
+  if (ON_PC_PAGE){ prepareSync(); return; }
   const c = cloudCfg();
   $('cloudKey').value = ''; $('cloudKey').placeholder = c.key ? 'Clave guardada (…' + c.key.slice(-4) + ')' : 'Clave de Gemini (AIza… o AQ.…)';
-  $('cloudMem').textContent = c.syncedAt
+  $('cloudMem').textContent = LINKED
+    ? 'Ahora te atiende el MARK del PC ✓. La memoria se actualiza sola y lo hablado con MARK nube ya se le entregó.'
+    : !c.pair && c.syncedAt
+    ? 'Memoria sincronizada, pero falta emparejar con el PC: con el PC encendido, pulsa otra vez SINCRONIZAR MEMORIA en el visor del PC.'
+    : c.syncedAt
     ? 'Memoria de MARK sincronizada el ' + new Date(c.syncedAt).toLocaleDateString('es', { day: 'numeric', month: 'long' }) + '.'
     : 'Memoria de MARK sin sincronizar: con el PC encendido, abre el visor del PC y en el panel SISTEMA pulsa SINCRONIZAR MEMORIA.';
-  $('cloudMem').classList.toggle('ok', !!c.syncedAt);
+  $('cloudMem').classList.toggle('ok', LINKED || !!(c.syncedAt && c.pair));
 }
 async function prepareSync(){
   const btn = $('cloudSync'), msg = $('cloudSyncMsg'); btn.disabled = true; CLOUD.link = null; msg.textContent = 'Preparando…';
   try {
-    const r = await fetch('/api/cloud-sync', { headers: { Authorization: 'Bearer ' + MARK.token } });
+    const r = await fetch(PC_BASE + '/api/cloud-sync', { headers: { Authorization: 'Bearer ' + MARK.token } });
     if (!r.ok) throw new Error(r.status);
     CLOUD.link = CLOUD_URL + '#sync=' + encodeURIComponent(textToB64(JSON.stringify(await r.json())));
     btn.disabled = false; msg.textContent = 'Listo. Al pulsar se abre MARK nube con la memoria actual de MARK.';
@@ -838,19 +923,36 @@ const CLOUD_NOTE = `[MARK NUBE — PHONE-ONLY SESSION — overrides the protocol
 You are running on the user's phone (the HUD visor, worn like Iron Man's helmet) while the PC is OFF or unreachable.
 You can NOT control the PC: no apps, files, e-mail, PC screen, PC webcam, PC resources, reminders or messages. Tools named in the protocol above that are not declared in this session do not exist right now; if asked, say the PC is off and it will be possible once it is on.
 Available now: look (visor camera snapshot, ONE per question; call it AGAIN for every new visual question — you have no live view), visor_hud (detections, distances, heading, GPS, speed, device status; scan_on / scan_off / capture), weather (at the user's position), and Google Search for anything current (news, prices, facts).
-Never comment on visual things or detections the user did not ask about.`;
+Never comment on visual things or detections the user did not ask about.
+HOW YOU REALLY WORK — never claim more than this: you are a separate session from the PC MARK. You only know what the PC
+gave you at the last sync (memory and its last conversation turns below). You do NOT know anything said to the PC after
+that, and the PC does not hear you live: what you talk about here is handed to the PC MARK the next time the visor
+reaches the PC switched on. If you do not know something, say so plainly.`;
+// la sección TOOL ROUTING del prompt del PC nombra herramientas que aquí no existen: llamarlas corta la sesión
+const cloudPrompt = p => p ? p.replace(/TOOL ROUTING:[\s\S]*?(?=\n[A-Z][A-Z /()_-]*:\s*\n|$)/, '') : '';
 function cloudSystem(c){
   const name = c.assistant || 'MARK';
   const addr = c.user ? `ADDRESS: Always call the user '${c.user}'.` : 'ADDRESS: When speaking Spanish → always say "señor". When speaking English → say "sir". Never mix languages.';
   return ['[CURRENT DATE & TIME]\nRight now it is: ' + new Date().toLocaleString('es', { dateStyle: 'full', timeStyle: 'short' }) + '\n',
     `[IDENTITY]\nYour name is ${name}. Always refer to yourself as ${name}.\n${addr}\n`,
-    c.memory || '', c.prompt || CLOUD_PROMPT, CLOUD_NOTE].filter(Boolean).join('\n');
+    c.memory || '',
+    c.recent && c.recent.length ? '[LAST CONVERSATION ON THE PC, at the last sync]\n' + c.recent.join('\n') + '\n' : '',
+    // lo ya hablado en el móvil (aún no entregado al PC): continuidad entre sesiones y tras una reconexión
+    c.journal && c.journal.length ? '[EARLIER WITH YOU ON THE PHONE (MARK nube)]\n' + c.journal.slice(-12).map(e =>
+      (e.user ? 'User: ' + e.user + '\n' : '') + (e.mark ? 'MARK nube: ' + e.mark : '')).join('\n') + '\n' : '',
+    c.facts && c.facts.length ? '[LEARNED ON THE PHONE, not yet in the PC memory]\n' + c.facts.map(f => `${f.category}/${f.key}: ${f.value}`).join('\n') + '\n' : '',
+    cloudPrompt(c.prompt) || CLOUD_PROMPT, CLOUD_NOTE].filter(Boolean).join('\n');
 }
 const CLOUD_TOOLS = [{ googleSearch: {} }, { functionDeclarations: [
   { name: 'look', description: 'Takes ONE still snapshot with the HUD visor camera (what the user is looking at) and sends it to you in the next message. MUST be called when the user asks what you see, what is there or to look at something. Call it ONCE per user question and AGAIN for every new visual question: you have no live view, never answer from an older image. Never call it on your own.',
     parameters: { type: 'OBJECT', properties: { question: { type: 'STRING', description: "The user's question about what the camera sees" } }, required: ['question'] } },
   { name: 'visor_hud', description: "Reads or drives the HUD visor. action='status' (default): recognized objects with estimated distance and bearing, locked target, heading, tilt, GPS, speed, light and device status (battery if known, network, visor performance). 'scan_on' / 'scan_off' turns object recognition on or off; 'capture' takes a photo that stays on the phone. Call ONLY when the user asks.",
     parameters: { type: 'OBJECT', properties: { action: { type: 'STRING', description: "'status', 'scan_on', 'scan_off' or 'capture'" } } } },
+  { name: 'save_memory', description: 'Save an important personal fact about the user to long-term memory. Call it silently whenever the user reveals something worth remembering or explicitly asks you to remember something (name, preferences, projects, relationships, plans, numbers or data they want kept). Do NOT announce that you are saving. Values in English. It reaches the PC memory when the visor reconnects with the PC.',
+    parameters: { type: 'OBJECT', properties: {
+      category: { type: 'STRING', description: 'identity | preferences | projects | relationships | wishes | notes' },
+      key: { type: 'STRING', description: 'Short snake_case key (e.g. favorite_food, safe_code)' },
+      value: { type: 'STRING', description: 'Concise value in English' } }, required: ['category', 'key', 'value'] } },
   { name: 'weather', description: 'Current weather where the user is right now (visor GPS): sky, temperature, feels like, humidity, wind, rain. Call when asked about the weather here.',
     parameters: { type: 'OBJECT', properties: {} } }
 ] }];
@@ -913,6 +1015,16 @@ async function cloudTool(L, fc){
     return formatHud(hudState());
   }
   if (fc.name === 'weather') return await cloudWeather();
+  if (fc.name === 'save_memory'){
+    const cats = ['identity', 'preferences', 'projects', 'relationships', 'wishes', 'notes'];
+    const fact = { category: cats.includes(a.category) ? a.category : 'notes', key: String(a.key || '').trim().slice(0, 60), value: String(a.value || '').trim().slice(0, 300) };
+    if (!fact.key || !fact.value) return 'Nothing to save: key and value are required.';
+    const c = cloudCfg();
+    c.facts = (c.facts || []).filter(f => !(f.category === fact.category && f.key === fact.key)).concat([fact]).slice(-40);
+    c.journal = (c.journal || []).concat([{ ts: Date.now(), memory: fact }]).slice(-60);
+    cloudStore(c);
+    return 'Saved. It will be added to the PC memory when the visor reconnects with the PC.';
+  }
   return 'That is not available while the PC is off.';
 }
 
@@ -927,9 +1039,13 @@ async function cloudLive(){
   catch (e) { log('Micrófono denegado'); return; }
   let ac; try { ac = new AudioContext({ sampleRate: 16000 }); } catch (_) { ac = new (window.AudioContext || window.webkitAudioContext)(); }
   if (ac.state === 'suspended') await ac.resume();
-  const ws = new WebSocket(CLOUD_WS + encodeURIComponent(c.key)); ws.binaryType = 'arraybuffer';
-  const L = CLOUD.live = { stream, ac, ws, node: null, srcs: new Set(), next: 0, inBuf: '', outBuf: '', pending: null, lastLook: 0, lastSpeech: 0 };
+  const L = CLOUD.live = { stream, ac, ws: null, node: null, srcs: new Set(), next: 0, inBuf: '', outBuf: '', pending: null, lastLook: 0, lastSpeech: 0, retriedAt: -Infinity };
   markStatus('CONECTANDO'); $('bMark').classList.add('on');
+  openCloudWs(L, c);
+}
+// abre (o reabre) la conexión con Gemini sin tocar el micrófono ni el audio: si Google corta, se reconecta solo
+function openCloudWs(L, c){
+  const ws = L.ws = new WebSocket(CLOUD_WS + encodeURIComponent(c.key)); ws.binaryType = 'arraybuffer';
   ws.onopen = () => ws.send(JSON.stringify({ setup: {
     model: c.model || CLOUD_MODEL,
     generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: c.voice || 'Charon' } } } },
@@ -940,12 +1056,19 @@ async function cloudLive(){
   } }));
   ws.onmessage = e => { let m; try { m = JSON.parse(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data)); } catch (_) { return; } cloudMsg(L, m); };
   ws.onclose = e => {
-    if (CLOUD.live !== L) return;
+    if (CLOUD.live !== L || L.ws !== ws) return;
     const why = e.reason || '';
-    stopCloud();
-    if (/api.?key|permission|unauthenticated/i.test(why)){ markStatus('CLAVE INVÁLIDA', true); log('Gemini rechazó la clave. Revísala en el panel SISTEMA'); }
-    else if (/quota|exhausted|rate/i.test(why)) log('Gemini: límite de uso alcanzado. Prueba más tarde');
-    else if (e.code !== 1000) log('MARK nube se desconectó' + (why ? ': ' + why.slice(0, 80) : '') + '. Pulsa MARK para seguir');
+    if (/api.?key|permission|unauthenticated/i.test(why)){ stopCloud(); markStatus('CLAVE INVÁLIDA', true); log('Gemini rechazó la clave. Revísala en el panel SISTEMA'); return; }
+    if (/quota|exhausted|rate/i.test(why)){ stopCloud(); log('Gemini: límite de uso alcanzado. Prueba más tarde'); return; }
+    if (e.code === 1000){ stopCloud(); return; }
+    // corte de Google (sesión caducada, fallo puntual): un reintento automático por minuto
+    if (navigator.onLine && performance.now() - L.retriedAt > 60000){
+      L.retriedAt = performance.now(); flushVoice(); L.pending = null;
+      markStatus('RECONECTANDO', true); log('Google cortó la sesión; reconectando MARK nube…');
+      setTimeout(() => { if (CLOUD.live === L) openCloudWs(L, cloudCfg()); }, 800);
+      return;
+    }
+    stopCloud(); log('MARK nube se desconectó' + (why ? ': ' + why.slice(0, 80) : '') + '. Pulsa MARK para seguir');
   };
 }
 async function cloudMic(L){
@@ -967,8 +1090,20 @@ async function cloudMic(L){
     L.node = L.ac.createScriptProcessor(4096, 1, 1); L.node.onaudioprocess = e => push(e.inputBuffer.getChannelData(0)); src.connect(L.node); L.node.connect(L.ac.destination);
   }
 }
+// tras usar una herramienta Gemini a veces repite la transcripción entera ("Anotado. Anotado."): se queda una sola
+function undouble(s){
+  const t = s.replace(/\s+/g, ' ').trim();
+  for (const sep of ['', ' ']){
+    const n = (t.length - sep.length) / 2;
+    if (n > 3 && Number.isInteger(n) && t.slice(0, n) === t.slice(n + sep.length)) return t.slice(0, n);
+  }
+  return t;
+}
 function cloudMsg(L, m){
-  if (m.setupComplete){ cloudMic(L); markStatus('NUBE · OYENDO'); log('MARK nube en línea: te escucha y habla por aquí'); return; }
+  if (m.setupComplete){
+    const again = L.micOn; if (!again){ L.micOn = true; cloudMic(L); }   // al reconectar el micrófono ya está en marcha
+    markStatus('NUBE · OYENDO'); log(again ? 'MARK nube reconectado' : 'MARK nube en línea: te escucha y habla por aquí'); return;
+  }
   if (m.toolCall){
     Promise.all((m.toolCall.functionCalls || []).map(async fc => ({ id: fc.id, name: fc.name, response: { result: await cloudTool(L, fc) } })))
       .then(r => { if (L.ws.readyState === 1) L.ws.send(JSON.stringify({ toolResponse: { functionResponses: r } })); });
@@ -981,9 +1116,13 @@ function cloudMsg(L, m){
   if (sc.outputTranscription && sc.outputTranscription.text) L.outBuf += sc.outputTranscription.text;
   if (sc.modelTurn) for (const p of sc.modelTurn.parts || []) if (p.inlineData && /audio/.test(p.inlineData.mimeType || '')) playVoice(fromB64(p.inlineData.data).buffer);
   if (sc.turnComplete){
-    if (L.inBuf.trim()) markSay('user', L.inBuf.trim());
-    if (L.outBuf.trim()) markSay('MARK', L.outBuf.trim());
+    const said = undouble(L.inBuf), answer = undouble(L.outBuf);
+    if (said) markSay('user', said);
+    if (answer) markSay('MARK', answer);
     L.inBuf = L.outBuf = '';
+    if (said || answer){   // diario para el MARK del PC: se le entrega al volver a conectar
+      const c = cloudCfg(); c.journal = (c.journal || []).concat([{ ts: Date.now(), user: said, mark: answer }]).slice(-60); cloudStore(c);
+    }
     if (L.pending && L.ws.readyState === 1){   // la foto se envía cuando MARK termina su frase de "estoy mirando"
       const p = L.pending; L.pending = null;
       L.ws.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [
@@ -1033,7 +1172,7 @@ $('go').addEventListener('click', async () => {
   await keepAwake();
   $('boot').hidden = true; measurePanels();
   log('Sistemas en línea'); log('Toca un objeto detectado para fijarlo');
-  if (MARK.on) markConnect();
+  if (ON_PC_PAGE) markConnect(); else chooseBrain();
   requestAnimationFrame(loop);
 });
 })();
