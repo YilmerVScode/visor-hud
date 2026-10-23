@@ -77,8 +77,17 @@ html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidd
 #ring{width:120px;height:120px;border-radius:50%;border:2px solid var(--hud-dim);border-top-color:var(--hud);animation:spin 2.4s linear infinite;box-shadow:0 0 40px rgba(95,230,255,.25) inset}
 @keyframes spin{to{transform:rotate(360deg)}}
 #err{color:var(--crit);font-size:12px;max-width:36ch}
-#shot{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px}
-#shot img{max-width:100%;max-height:75vh;border:1px solid var(--hud)}
+#shot{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  padding:calc(env(safe-area-inset-top,0px) + 16px) max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 16px) max(16px,env(safe-area-inset-left,0px))}
+#shot img{max-width:100%;max-height:60vh;max-height:60dvh;min-height:0;object-fit:contain;border:1px solid var(--hud)}
+#flash{position:fixed;inset:0;z-index:25;background:#fff;pointer-events:none;opacity:0}
+#flash.go{animation:flash .35s ease-out}
+@keyframes flash{0%{opacity:.85}100%{opacity:0}}
+#thumb{position:fixed;z-index:26;right:calc(env(safe-area-inset-right,0px) + 12px);bottom:calc(env(safe-area-inset-bottom,0px) + 74px);width:84px;padding:0;border:1px solid var(--hud);background:var(--glass);
+  box-shadow:0 0 14px rgba(95,230,255,.45);transition:opacity .4s,transform .4s}
+#thumb img{display:block;width:100%}
+#thumb span{display:block;font:700 9px/1 var(--display);letter-spacing:.12em;color:var(--hud);padding:4px 0;text-align:center}
+#thumb.out{opacity:0;transform:translateX(30px)}
 #shot p{font-size:12px;color:var(--hud);margin:0;text-align:center}
 #shot button{font:700 12px var(--display);letter-spacing:.2em;background:var(--hud);color:#02080c;border:0;padding:12px 24px}
 #markSub{top:calc(env(safe-area-inset-top,0px) + 254px);left:calc(env(safe-area-inset-left,0px) + 10px);right:calc(env(safe-area-inset-right,0px) + 10px);color:var(--ink);font-size:12px;line-height:1.45;border-color:var(--hud)}
@@ -155,9 +164,11 @@ html,body{margin:0;height:100%;background:#02080c;color:var(--ink);overflow:hidd
   <div id="err"></div>
 </div>
 
+<div id="flash"></div>
+<button id="thumb" type="button" hidden><img id="thumbImg" alt="Última captura"><span id="thumbTxt">CAPTURA</span></button>
 <div id="shot" hidden>
   <img id="shotImg" alt="Captura del visor">
-  <p>Mantén pulsada la imagen y elige «Guardar en Fotos».</p>
+  <p>Mantén pulsada la imagen y elige «Guardar en Fotos». Toca para cerrar.</p>
   <button id="shotClose" type="button">CERRAR</button>
 </div>
 
@@ -194,7 +205,9 @@ const pad = n => String(n).padStart(2, '0');
 const CARD = ['N','NE','E','SE','S','SO','O','NO'];
 const card = h => CARD[Math.round(h / 45) % 8];
 function log(msg){ const d = document.createElement('div'); d.textContent = '> ' + msg; $('log').prepend(d); while ($('log').children.length > 5) $('log').lastChild.remove(); }
-function say(t){ if (!S.voice || !('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(t); u.lang = 'es-ES'; u.rate = 1.05; speechSynthesis.speak(u); }
+// enlazado con MARK: la voz es la de MARK, el visor no habla por su cuenta
+const LINKED = location.pathname.replace(/\/+$/, '') === '/hud';
+function say(t){ if (LINKED || !S.voice ||!('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(t); u.lang = 'es-ES'; u.rate = 1.05; speechSynthesis.speak(u); }
 
 function resize(){ DPR = Math.min(window.devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR,0,0,DPR,0,0); S.vFov = W > H ? 50 : 66; measurePanels(); }
 // ángulo de la pantalla respecto a la posición vertical natural (0, 90, -90, 180)
@@ -246,7 +259,7 @@ async function startBattery(){
 function startGeo(){
   if (!('geolocation' in navigator)) return;
   navigator.geolocation.watchPosition(p => {
-    const c = p.coords;
+    const c = p.coords; S.geo = c;
     $('lat').textContent = fmt(c.latitude, 5) + '°'; $('lon').textContent = fmt(c.longitude, 5) + '°';
     $('alt').textContent = c.altitude != null ? fmt(c.altitude, 0) + ' m' : '—';
     $('acc').textContent = '±' + fmt(c.accuracy, 0) + ' m';
@@ -443,7 +456,9 @@ function loop(now){
 }
 
 // --- captura
-$('bShot').addEventListener('click', () => {
+let thumbTimer = 0;
+function capture(){
+  if (video.readyState < 2) return;
   const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const x = c.getContext('2d');
   const m = vmap(); x.save(); x.scale(DPR, DPR);
   if (S.facing === 'user'){ x.translate(W, 0); x.scale(-1, 1); }
@@ -451,9 +466,30 @@ $('bShot').addEventListener('click', () => {
   x.drawImage(cv, 0, 0);
   x.scale(DPR, DPR); x.fillStyle = C; x.font = '600 12px "JetBrains Mono",monospace';
   const d = new Date(); x.fillText(d.toLocaleString('es') + (S.heading != null ? '  RUMBO ' + Math.round(S.heading) + '°' : '') + '  ' + $('lat').textContent + ' ' + $('lon').textContent, 12, H - 14);
-  $('shotImg').src = c.toDataURL('image/jpeg', .9); $('shot').hidden = false; say('Captura registrada');
-});
-$('shotClose').addEventListener('click', () => { $('shot').hidden = true; });
+  const url = c.toDataURL('image/jpeg', .9);
+  $('shotImg').src = $('thumbImg').src = url;
+  // destello y miniatura que se van solos; la vista grande solo se abre si tocas la miniatura
+  const f = $('flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
+  const th = $('thumb'); th.hidden = false; th.classList.remove('out'); $('thumbTxt').textContent = 'CAPTURA';
+  clearTimeout(thumbTimer); thumbTimer = setTimeout(() => { th.classList.add('out'); thumbTimer = setTimeout(() => { th.hidden = true; }, 450); }, 4000);
+  log('Captura registrada'); say('Captura registrada');
+  if (LINKED && MARK.token) c.toBlob(b => uploadShot(b, d), 'image/jpeg', .9);
+}
+// enlazado con MARK: la captura se guarda también en el PC (carpeta «MARK Uploads»)
+async function uploadShot(blob, d){
+  if (!blob) return;
+  const name = 'visor_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.jpg';
+  const fd = new FormData(); fd.append('file', blob, name);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + MARK.token }, body: fd });
+    if (!r.ok) throw new Error(r.status);
+    log('Captura guardada en el PC'); $('thumbTxt').textContent = 'EN EL PC ✓';
+  } catch (e) { log('No se pudo guardar la captura en el PC'); }
+}
+$('bShot').addEventListener('click', capture);
+$('thumb').addEventListener('click', () => { clearTimeout(thumbTimer); $('thumb').hidden = true; $('shot').hidden = false; });
+// la vista grande se cierra con un toque en cualquier parte (mantener pulsada la imagen sigue sirviendo para guardarla)
+$('shot').addEventListener('click', () => { $('shot').hidden = true; });
 
 $('bScan').addEventListener('click', toggleScan);
 $('bMic').addEventListener('click', toggleMic);
@@ -482,22 +518,67 @@ function markSay(speaker, text){
   el.querySelector('h3').textContent = mine ? 'TÚ' : 'MARK'; $('markTxt').textContent = text;
   clearTimeout(MARK.subTimer); MARK.subTimer = setTimeout(() => { el.hidden = true; measurePanels(); }, mine ? 6000 : 14000);
   measurePanels();
-  if (!mine) say(text);
 }
+// rumbo real hacia un punto de la imagen (x en píxeles del vídeo)
+function bearingAt(vx){
+  if (S.heading == null) return null;
+  const m = vmap(); let off = ((vx / m.vw) - .5) * S.vFov * (m.vw / m.vh);
+  if (S.facing === 'user') off = -off + 180;
+  return Math.round((S.heading + off + 360) % 360);
+}
+// lo que el visor sabe ahora mismo; MARK lo consulta solo cuando le preguntas (herramienta visor_hud)
+function hudState(){
+  const obj = d => ({ name: (LBL[d.cls] || [d.cls])[0], conf: +d.score.toFixed(2), dist: +distOf(d).toFixed(1), bearing: bearingAt(d.bbox[0] + d.bbox[2] / 2) });
+  const g = S.geo;
+  return {
+    facing: S.facing, scan: S.scan, scan_ready: !!S.model,
+    objects: S.scan ? S.dets.map(obj) : [],
+    target: S.lock ? obj(S.lock) : null,
+    heading: S.heading == null ? null : Math.round(S.heading), cardinal: S.heading == null ? '' : card(S.heading),
+    pitch: Math.round(S.pitch),
+    lat: g ? g.latitude : null, lon: g ? g.longitude : null, acc: g ? Math.round(g.accuracy) : null,
+    alt: g && g.altitude != null ? Math.round(g.altitude) : null,
+    speed: g && g.speed != null && g.speed >= 0 ? +(g.speed * 3.6).toFixed(1) : null,
+    lux: S.lux == null ? null : Math.round(S.lux)
+  };
+}
+function hudCmd(cmd){
+  if (cmd === 'scan_on' && !S.scan) toggleScan();
+  else if (cmd === 'scan_off' && S.scan) toggleScan();
+  else if (cmd === 'capture') capture();
+  else if (cmd === 'audio_flush') flushVoice();
+}
+// --- voz de MARK por el altavoz del móvil (PCM 16 bits, 24 kHz)
+function playVoice(ab){
+  const L = MARK.live; if (!L || !ab.byteLength) return;
+  const i16 = new Int16Array(ab), buf = L.ac.createBuffer(1, i16.length, 24000), ch = buf.getChannelData(0);
+  for (let i = 0; i < i16.length; i++) ch[i] = i16[i] / 32768;
+  const src = L.ac.createBufferSource(); src.buffer = buf; src.connect(L.ac.destination);
+  const t = Math.max(L.ac.currentTime + .15, L.next || 0); src.start(t); L.next = t + buf.duration;
+  L.srcs.add(src); src.onended = () => L.srcs.delete(src);
+}
+function flushVoice(){ const L = MARK.live; if (!L) return; L.srcs.forEach(s => { try { s.stop(); } catch (_) {} }); L.srcs.clear(); L.next = 0; }
+const voicePlaying = () => { const L = MARK.live; return !!(L && L.next && L.ac.currentTime < L.next); };
 async function markConnect(){
   if (!(await markAuth())){ markStatus('SIN QR', true); log('Escanea el QR «VISOR HUD» de MARK'); return; }
   const ws = new WebSocket(wsBase() + '/ws?token=' + encodeURIComponent(MARK.token));
   let fresh = false; MARK.ws = ws;
-  ws.onopen = () => { MARK.retried = false; markStatus('ENLAZADO'); log('Enlace con MARK establecido'); setTimeout(() => { fresh = true; }, 800); };
+  ws.onopen = () => {
+    MARK.retried = false; markStatus('ENLAZADO'); log('Enlace con MARK establecido'); setTimeout(() => { fresh = true; }, 800);
+    ws.send(JSON.stringify({ type: 'hud_hello' }));
+    clearInterval(MARK.stateTimer);
+    MARK.stateTimer = setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'hud_state', state: hudState() })); }, 1000);
+  };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+    if (m.type === 'hud_cmd'){ hudCmd(m.cmd); return; }
     if (m.type === 'status') markStatus(m.state !== 'active' ? 'DORMIDO' : MARK.live ? 'ESCUCHANDO' : 'ACTIVO', m.state !== 'active');
     if (!fresh) return;   // el servidor reenvía el historial al conectar: no repetirlo
     if (m.type === 'log') markSay(m.speaker, m.text);
     if (m.type === 'sys') log(m.text);
   };
   ws.onclose = e => {
-    MARK.ws = null; stopLive();
+    MARK.ws = null; clearInterval(MARK.stateTimer); stopLive();
     if (e.code === 4001){ // sesión caducada: intenta una vez con el emparejamiento guardado
       try { sessionStorage.removeItem('MARK_token'); } catch (_) {}
       MARK.token = null;
@@ -524,13 +605,15 @@ async function markLive(){
   if (ac.state === 'suspended') await ac.resume();
   const q = '?token=' + encodeURIComponent(MARK.token);
   const aws = new WebSocket(wsBase() + '/ws/phone-audio' + q), vws = new WebSocket(wsBase() + '/ws/phone-video' + q);
-  aws.binaryType = vws.binaryType = 'arraybuffer';
-  const L = MARK.live = { stream, ac, aws, vws, node: null, timer: 0 };
+  const sws = new WebSocket(wsBase() + '/ws/phone-speaker' + q);   // mientras MARK esté activo, su voz sale por el móvil
+  aws.binaryType = vws.binaryType = sws.binaryType = 'arraybuffer';
+  const L = MARK.live = { stream, ac, aws, vws, sws, node: null, timer: 0, srcs: new Set(), next: 0 };
+  sws.onmessage = e => playVoice(e.data);
   aws.onopen = async () => {
     const rate = ac.sampleRate, src = ac.createMediaStreamSource(stream);
     let buf = [], len = 0;
     const push = f32 => {
-      if (window.speechSynthesis && speechSynthesis.speaking) return;   // no mandarle a MARK su propia voz
+      if (voicePlaying()) return;   // no mandarle a MARK su propia voz
       const c = toPcm16(f32, rate); buf.push(c); len += c.length;
       if (len >= 1024){ const out = new Int16Array(len); let o = 0; for (const b of buf){ out.set(b, o); o += b.length; } if (aws.readyState === 1) aws.send(out.buffer); buf = []; len = 0; }
     };
@@ -541,7 +624,7 @@ async function markLive(){
     } catch (_) {
       L.node = ac.createScriptProcessor(4096, 1, 1); L.node.onaudioprocess = e => push(e.inputBuffer.getChannelData(0)); src.connect(L.node); L.node.connect(ac.destination);
     }
-    $('bMark').classList.add('on'); markStatus('ESCUCHANDO'); log('MARK te escucha y ve por la cámara');
+    $('bMark').classList.add('on'); markStatus('ESCUCHANDO'); log('MARK te escucha, ve por la cámara y habla por aquí');
   };
   aws.onerror = () => log('No se pudo enviar la voz a MARK');
   aws.onclose = () => stopLive();
@@ -559,14 +642,15 @@ async function markLive(){
 function stopLive(){
   const L = MARK.live; if (!L) return; MARK.live = null;
   clearInterval(L.timer);
+  L.srcs.forEach(s => { try { s.stop(); } catch (_) {} });
   try { L.node && L.node.disconnect(); } catch (_) {}
   try { L.ac.close(); } catch (_) {}
   L.stream.getTracks().forEach(t => t.stop());
-  [L.aws, L.vws].forEach(w => { if (w.readyState < 2) w.close(); });
+  [L.aws, L.vws, L.sws].forEach(w => { if (w.readyState < 2) w.close(); });
   $('bMark').classList.remove('on'); markStatus(MARK.ws ? 'ENLAZADO' : '—', !MARK.ws);
 }
 $('bMark').addEventListener('click', markLive);
-if (MARK.on){ $('markRow').hidden = false; $('bMark').hidden = false; $('boot').querySelector('p').textContent = 'Enlace con MARK. Se pedirá permiso para la cámara, el micrófono, el movimiento y la ubicación.'; }
+if (MARK.on){ $('markRow').hidden = false; $('bMark').hidden = false; $('bVoice').hidden = true; $('boot').querySelector('p').textContent = 'Enlace con MARK. Se pedirá permiso para la cámara, el micrófono, el movimiento y la ubicación.'; }
 
 // --- arranque (iOS exige un toque del usuario para pedir permisos de movimiento)
 $('go').addEventListener('click', async () => {
